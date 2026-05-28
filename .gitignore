@@ -1,0 +1,5 @@
+.DS_Store
+
+# 관리 도구
+generate-docs.sh
+prompts/
