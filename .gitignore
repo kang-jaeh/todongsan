@@ -3,3 +3,6 @@
 # 관리 도구
 generate-docs.sh
 prompts/
+
+# env 파일
+.env
