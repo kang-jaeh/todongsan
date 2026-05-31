@@ -1,7 +1,7 @@
 # MARKET_ERD_v2.md
 
-> Market Service 데이터베이스 설계 문서 v2.  
-> 본 버전은 API 명세 v2와 동일하게 다음 정책을 반영한다.
+> Market Service 데이터베이스 설계 문서 ver3.  
+> 본 버전은 API 명세 ver3와 동일하게 다음 정책을 반영한다.
 >
 > - 예측 참여는 `POINT_PENDING` 선저장 후 Member-Point API 호출, 이후 가격 확정 트랜잭션으로 분리한다.
 > - 가격 확정 트랜잭션은 Market row와 해당 Market의 모든 MarketOption row를 비관적 락으로 잡는다.
