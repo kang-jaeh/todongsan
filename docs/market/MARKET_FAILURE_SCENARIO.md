@@ -1,4 +1,4 @@
-# MARKET_FAILURE_SCENARIO.md
+# MARKET_FAILURE_SCENARIO_v2.md
 
 > Market 서비스에서 발생할 수 있는 실패 시나리오와 상태 전이, 재시도 정책, 복구 방식을 정의한다.  
 > 이 문서는 `MARKET_ERROR_CODE.md`와 `MARKET_API_SPEC.md` 작성 전 기준 문서로 사용한다.  
@@ -56,9 +56,8 @@ public enum MarketStatus {
 
 ```java
 public enum PredictionStatus {
-    PENDING,          // 예측 생성됨, 포인트 차감 전
-    POINT_PENDING,    // 포인트 차감 요청 중
-    CONFIRMED,        // 포인트 차감 완료, 예측 참여 확정
+    POINT_PENDING,    // Prediction 선저장 완료, 포인트 차감 요청 전/요청 중
+    CONFIRMED,        // 포인트 차감 완료, 가격 확정 완료, 예측 참여 확정
     FAILED,           // 예측 참여 실패
     POINT_UNKNOWN,    // 포인트 차감 여부 불명확
     SETTLED,          // 정산 완료
@@ -74,12 +73,26 @@ public enum PredictionStatus {
 
 ### 3-1. Prediction은 포인트 차감 전에 먼저 저장한다
 
+예측 참여는 포인트 차감 전에 `market_prediction`을 먼저 `POINT_PENDING` 상태로 저장한다.
+
 ```text
+[트랜잭션 A]
 Prediction POINT_PENDING 저장
-→ Member-Point 포인트 차감 요청
-→ 성공 시 CONFIRMED
-→ 명확한 실패 시 FAILED
-→ 타임아웃/5xx/응답 불명확 시 POINT_UNKNOWN
+→ 커밋
+
+[트랜잭션 밖]
+Member-Point 포인트 차감 요청
+
+[트랜잭션 B]
+포인트 차감 성공 확인
+→ Market row 비관적 락 획득
+→ 해당 Market의 모든 MarketOption row 비관적 락 획득
+→ priceSnapshot, contractQuantity 확정
+→ pool 갱신
+→ 전체 선택지 가격 재계산
+→ PriceHistory 저장
+→ Prediction CONFIRMED 변경
+→ 커밋
 ```
 
 포인트 차감 후 Prediction을 저장하는 방식은 사용하지 않는다.
@@ -90,6 +103,18 @@ Prediction POINT_PENDING 저장
 포인트 차감 성공
 → Prediction 저장 실패
 → 유저 포인트는 차감되었지만 예측 기록이 남지 않음
+```
+
+또한 DB 락을 잡은 트랜잭션 안에서 Member-Point HTTP API를 호출하지 않는다.
+
+이유:
+
+```text
+외부 HTTP 응답 지연
+→ DB 커넥션과 락 장시간 점유
+→ lock wait 증가
+→ 커넥션 풀 고갈
+→ 장애 전파
 ```
 
 ---
@@ -154,41 +179,98 @@ DB 제약 조건:
 UNIQUE (market_id, member_id)
 ```
 
-Idempotency-Key:
+예측 참여 포인트 차감 Idempotency-Key:
 
 ```text
 MARKET_PREDICTION_SPEND:market:{marketId}:member:{memberId}
 ```
 
-`optionId`는 멱등성 키에 포함하지 않는다.
+`optionId`는 예측 참여 포인트 차감 멱등성 키에 포함하지 않는다.
+
+이유:
+
+```text
+같은 사용자가 같은 Market에서 서로 다른 선택지를 동시에 요청하더라도,
+포인트 차감은 Market 단위로 1회만 발생해야 하기 때문이다.
+```
+
+단, 정산/환불은 batch 내부 item 단위로 멱등성을 보장한다.
+
+정산 보상 Idempotency-Key:
+
+```text
+MARKET_SETTLEMENT_REWARD:market:{marketId}:prediction:{predictionId}:member:{memberId}
+```
+
+무효 환불 Idempotency-Key:
+
+```text
+MARKET_REFUND:market:{marketId}:prediction:{predictionId}:member:{memberId}
+```
+
+정산/환불은 Prediction 1건이 곧 Member 1명에 대한 포인트 거래 1건이므로, `predictionId` 기준 item별 멱등성 키를 사용한다.
 
 ---
 
-### 3-5. 가격 갱신 구간은 동시성 제어가 필요하다
+### 3-5. 가격 확정 구간은 Market 단위 동시성 제어가 필요하다
 
-예측 참여 시 다음 데이터가 함께 변경된다.
+예측 참여 확정 시 다음 데이터가 함께 변경된다.
 
 ```text
+Market total_pool
 MarketOption realPoolAmount
 MarketOption currentPrice
-PriceHistory
-Prediction
+MarketOption totalContractQuantity
+MarketPriceHistory
+MarketPrediction
 ```
 
-마감 직전 다수 사용자가 동시에 참여하면 Lost Update, Deadlock, 가격 이력 불일치가 발생할 수 있다.
-
-따라서 다음 구간은 DB 비관적 락 또는 Atomic Update로 보호한다.
+Pool-Share 방식의 가격 계산은 선택한 옵션 하나만 보지 않는다.
 
 ```text
-1. 선택한 MarketOption의 pool amount 갱신
-2. 전체 선택지 가격 재계산
-3. PriceHistory 저장
+선택지 가격 = 해당 선택지 pool / 전체 선택지 pool 합
 ```
 
-MVP 권장:
+따라서 선택한 MarketOption row만 락 잡는 방식은 사용하지 않는다.
+
+잘못된 방식:
 
 ```text
-DB 비관적 락 SELECT ... FOR UPDATE
+사용자 A → YES option row lock
+사용자 B → NO option row lock
+
+서로 다른 row라서 동시에 처리 가능
+→ 전체 option pool 합을 계산할 때 서로의 변경을 반영하지 못할 수 있음
+→ currentPrice 불일치 발생
+```
+
+MVP 권장 락 정책:
+
+```sql
+SELECT *
+FROM market
+WHERE id = :marketId
+FOR UPDATE;
+```
+
+그 다음 해당 Market의 모든 선택지를 고정 순서로 락 조회한다.
+
+```sql
+SELECT *
+FROM market_option
+WHERE market_id = :marketId
+ORDER BY id
+FOR UPDATE;
+```
+
+처리 기준:
+
+```text
+1. 같은 Market 안의 가격 확정은 순차 처리한다.
+2. Market row를 먼저 락 잡는다.
+3. 해당 Market의 모든 MarketOption row를 optionId 오름차순으로 락 잡는다.
+4. 선택한 option만 락 잡는 방식은 사용하지 않는다.
+5. 고정 순서로 락을 잡아 데드락 가능성을 줄인다.
 ```
 
 확장안:
@@ -196,6 +278,8 @@ DB 비관적 락 SELECT ... FOR UPDATE
 ```text
 Redis Redisson 분산 락
 ```
+
+단, MVP에서는 DB 비관적 락을 우선 적용한다.
 
 ---
 
@@ -276,6 +360,32 @@ refundAmount
 
 ---
 
+### 3-10. Member-Point 연동 referenceType 정책
+
+Market이 Member-Point API를 호출할 때는 다음 값을 전달한다.
+
+```text
+referenceType = MARKET_PREDICTION
+referenceId = predictionId
+```
+
+사용 기준:
+
+| Market 상황 | Member-Point type | referenceType | referenceId |
+|---|---|---|---|
+| 예측 참여 포인트 차감 | `SPEND_MARKET` | `MARKET_PREDICTION` | predictionId |
+| 정산 보상 지급 | `SETTLE_MARKET` | `MARKET_PREDICTION` | predictionId |
+| 무효 환불 | `REFUND_MARKET` | `MARKET_PREDICTION` | predictionId |
+
+주의:
+
+```text
+referenceType/referenceId는 Member-Point의 point_history에 저장되는 값이다.
+Market DB에는 이미 prediction_id가 있으므로 reference_type/reference_id를 중복 저장하지 않는다.
+```
+
+---
+
 ## 4. 예측 참여 실패 시나리오
 
 ### 4-1. 정상 예측 참여
@@ -284,7 +394,8 @@ refundAmount
 |---|---|
 | 발생 시점 | 사용자가 Market 예측 참여 요청 |
 | 조건 | Market ACTIVE, 선택지 정상, 중복 참여 아님, 포인트 충분 |
-| 처리 | Prediction을 POINT_PENDING으로 저장 후 포인트 차감 요청 |
+| 처리 | Prediction을 POINT_PENDING으로 저장 후 커밋하고, 트랜잭션 밖에서 포인트 차감 요청 |
+| 가격 확정 | 포인트 차감 성공 후 새 트랜잭션에서 Market row와 모든 option row를 락 잡고 가격 확정 |
 | 최종 상태 | PredictionStatus = CONFIRMED |
 | 재시도 | 필요 없음 |
 | 관련 ErrorCode | 없음 |
@@ -366,23 +477,25 @@ UNIQUE (market_id, member_id)
 
 ---
 
-### 4-7. 가격 갱신 동시성 충돌
+### 4-7. 가격 확정 동시성 충돌
 
 | 항목 | 내용 |
 |---|---|
-| 발생 시점 | 예측 참여 처리 중 MarketOption 가격 갱신 |
-| 실패 원인 | 동시 요청으로 인한 락 타임아웃, 데드락, 갱신 충돌 |
-| 상태 변화 | Prediction 상태는 처리 단계에 따라 유지 또는 UNKNOWN 처리 |
+| 발생 시점 | 포인트 차감 성공 후 가격 확정 트랜잭션 |
+| 실패 원인 | Market row 또는 MarketOption row 락 타임아웃, 데드락, 갱신 충돌 |
+| 상태 변화 | PredictionStatus = POINT_PENDING 또는 POINT_UNKNOWN 유지 |
 | 재시도 | O |
-| 복구 방식 | 트랜잭션 롤백 후 재시도 또는 사용자 재요청 |
+| 복구 방식 | Scheduler가 Member-Point 거래 상태를 확인한 뒤 가격 확정 트랜잭션 재시도 |
 | 관련 ErrorCode | MARKET_PRICE_UPDATE_CONFLICT |
 | HTTP Status | 409 |
 
 주의:
 
 ```text
-포인트 차감 이후 가격 갱신에서 실패한 경우,
-반드시 Prediction 상태와 포인트 처리 이력을 기준으로 대사해야 한다.
+포인트 차감은 성공했지만 가격 확정 트랜잭션에서 실패할 수 있다.
+이 경우 Prediction을 FAILED로 단정하지 않는다.
+반드시 Idempotency-Key로 Member-Point 차감 이력을 확인한 뒤,
+Market row + 모든 option row 락을 다시 획득하여 가격 확정을 재시도한다.
 ```
 
 ---
@@ -399,7 +512,14 @@ UNIQUE (market_id, member_id)
 | 재시도 | X |
 | 관련 ErrorCode | POINT_INSUFFICIENT |
 | ErrorCode 소유 | Member-Point |
-| HTTP Status | 400 |
+| HTTP Status | 409 |
+
+처리 기준:
+
+```text
+POINT_INSUFFICIENT는 요청 형식 오류가 아니라
+현재 회원 포인트 잔액 상태와 요청이 충돌한 것이므로 409 Conflict로 처리한다.
+```
 
 ---
 
@@ -451,13 +571,32 @@ UNIQUE (market_id, member_id)
 
 | 항목 | 내용 |
 |---|---|
-| 발생 시점 | 포인트 차감 성공 응답 수신 후 Market 상태 업데이트 전 |
-| 실패 원인 | Market 서버 장애, DB 업데이트 실패, 인스턴스 종료 |
+| 발생 시점 | Prediction POINT_PENDING 저장 이후 |
+| 실패 원인 | Market 서버 장애, DB 업데이트 실패, 가격 확정 트랜잭션 실패, 인스턴스 종료 |
 | 상태 변화 | PredictionStatus = POINT_PENDING 상태로 고착 |
 | 재시도 | O |
 | 복구 방식 | Scheduler가 3분 이상 지난 POINT_PENDING을 조회하여 대사 |
 | 관련 ErrorCode | 없음 또는 내부 로그 |
 | HTTP Status | API 응답 없음 |
+
+대표 사례:
+
+```text
+Prediction POINT_PENDING 저장
+→ Member-Point 포인트 차감 성공
+→ 가격 확정 트랜잭션 시작 전 또는 진행 중 Market 서버 장애
+→ PredictionStatus = POINT_PENDING 상태로 고착
+```
+
+대사 방식:
+
+```text
+1. Prediction의 point_spend_idempotency_key로 Member-Point 거래 상태 조회
+2. 차감 성공 확인 시 Market row + 모든 option row 락 획득
+3. priceSnapshot, contractQuantity 확정
+4. pool 갱신, 가격 재계산, PriceHistory 저장
+5. Prediction CONFIRMED 변경
+```
 
 ---
 
@@ -607,14 +746,30 @@ UNIQUE (market_id, member_id)
 
 | 항목 | 내용 |
 |---|---|
-| 발생 시점 | 정산 보상 지급 |
-| 실패 원인 | 일부 Member-Point 지급 요청 실패 |
+| 발생 시점 | Member-Point 정산 보상 batch API 호출 |
+| 실패 원인 | 일부 item의 지급 요청 실패 |
 | 상태 변화 | MarketStatus = SETTLEMENT_IN_PROGRESS 유지 |
-| 성공 건 | PredictionStatus = SETTLED |
-| 실패 건 | 재시도 대상으로 기록 |
+| 성공 건 | PredictionStatus = SETTLED, market_settlement_detail.status = SUCCESS |
+| 실패 건 | market_settlement_detail.status = FAILED 또는 UNKNOWN |
 | 재시도 | O |
 | 관련 ErrorCode | MARKET_SETTLEMENT_FAILED 또는 EXTERNAL_SERVICE_ERROR |
 | HTTP Status | 500 또는 502 |
+
+정산 batch API는 유지하되, 멱등성은 item 단위로 보장한다.
+
+정산 item Idempotency-Key:
+
+```text
+MARKET_SETTLEMENT_REWARD:market:{marketId}:prediction:{predictionId}:member:{memberId}
+```
+
+Member-Point 응답의 item별 `results[]` 처리 기준:
+
+| status | Market 처리 |
+|---|---|
+| `PROCESSED` | 성공으로 처리 |
+| `ALREADY_PROCESSED` | 이미 처리된 거래이므로 성공으로 처리 |
+| `FAILED` | 실패 건으로 기록하고 다음 Scheduler 주기에 재시도 |
 
 ---
 
@@ -703,14 +858,30 @@ UNIQUE (market_id, member_id)
 
 | 항목 | 내용 |
 |---|---|
-| 발생 시점 | Market VOIDED 처리 |
-| 실패 원인 | 일부 환불 요청 실패 |
+| 발생 시점 | Member-Point 환불 batch API 호출 |
+| 실패 원인 | 일부 item의 환불 요청 실패 |
 | 상태 변화 | MarketStatus = VOIDED 유지 |
-| 성공 건 | PredictionStatus = REFUNDED |
-| 실패 건 | REFUND_UNKNOWN 또는 재시도 대상으로 기록 |
+| 성공 건 | PredictionStatus = REFUNDED, market_refund_detail.status = SUCCESS |
+| 실패 건 | market_refund_detail.status = FAILED 또는 UNKNOWN |
 | 재시도 | O |
 | 관련 ErrorCode | MARKET_REFUND_FAILED 또는 EXTERNAL_SERVICE_ERROR |
 | HTTP Status | 500 또는 502 |
+
+환불 batch API는 유지하되, 멱등성은 item 단위로 보장한다.
+
+환불 item Idempotency-Key:
+
+```text
+MARKET_REFUND:market:{marketId}:prediction:{predictionId}:member:{memberId}
+```
+
+Member-Point 응답의 item별 `results[]` 처리 기준:
+
+| status | Market 처리 |
+|---|---|
+| `PROCESSED` | 성공으로 처리 |
+| `ALREADY_PROCESSED` | 이미 처리된 거래이므로 성공으로 처리 |
+| `FAILED` | 실패 건으로 기록하고 다음 Scheduler 주기에 재시도 |
 
 ---
 
@@ -827,7 +998,7 @@ POST /internal/api/v1/markets/refunds/retry-failed?limit=100
 | Member-Point 5xx | O | 일시적 서버 장애 가능 |
 | Member-Point 연결 실패 | O | 서비스 재기동 후 성공 가능 |
 | 3분 이상 POINT_PENDING 고착 | O | Market 서버 장애 또는 상태 업데이트 실패 가능 |
-| 가격 갱신 동시성 충돌 | O | 일시적 락 경합 가능 |
+| 가격 확정 동시성 충돌 | O | 일시적 락 경합 가능 |
 | 공공 데이터 API 실패 | O | 외부 API 일시 장애 가능 |
 | 정산 포인트 지급 실패 | O | 일부 실패 건 재처리 가능 |
 | 환불 실패 | O | 일부 실패 건 재처리 가능 |
@@ -853,8 +1024,9 @@ POST /internal/api/v1/markets/refunds/retry-failed?limit=100
 
 ## 15. 최종 완료 기준
 
-- [ ] 예측 참여 시 Prediction을 먼저 `POINT_PENDING`으로 저장한다.
-- [ ] 포인트 차감 성공 시 `CONFIRMED`로 변경한다.
+- [ ] 예측 참여 시 Prediction을 먼저 `POINT_PENDING`으로 저장하고 커밋한다.
+- [ ] DB 락을 잡은 상태로 Member-Point HTTP API를 호출하지 않는다.
+- [ ] 포인트 차감 성공 후 가격 확정 트랜잭션까지 완료되면 `CONFIRMED`로 변경한다.
 - [ ] 포인트 부족은 `FAILED`로 변경한다.
 - [ ] 포인트 차감 타임아웃은 `POINT_UNKNOWN`으로 변경한다.
 - [ ] `POINT_UNKNOWN`은 Scheduler가 Idempotency-Key로 처리 이력을 조회한다.
@@ -862,14 +1034,14 @@ POST /internal/api/v1/markets/refunds/retry-failed?limit=100
 - [ ] 하나의 Market에 대해 한 사용자는 하나의 Prediction만 가질 수 있다.
 - [ ] `UNIQUE (market_id, member_id)` 제약을 둔다.
 - [ ] 선택지 범위 겹침/공백은 생성 또는 승인 단계에서 차단한다.
-- [ ] 가격 갱신 구간은 DB 비관적 락 또는 Atomic Update로 보호한다.
+- [ ] 가격 확정 트랜잭션은 Market row와 해당 Market의 모든 MarketOption row를 고정 순서로 비관적 락 조회한다.
 - [ ] Decimal 필드는 JSON String으로 응답한다.
 - [ ] 가격 이력 조회는 페이징한다.
 - [ ] Client는 502/503/504 수신 시 polling으로 최종 상태를 확인한다.
 - [ ] 공공 데이터는 예상 수집일로부터 최대 3일간 `DATA_PENDING`으로 유지한다.
 - [ ] 정산 시작은 Atomic Update로 `SETTLEMENT_IN_PROGRESS` 권한을 획득한다.
 - [ ] 일부 정산 실패 시 `SETTLEMENT_IN_PROGRESS`를 유지한다.
-- [ ] 실패한 정산 지급 건만 재시도한다.
+- [ ] 정산은 item별 idempotencyKey를 사용하고 실패한 정산 지급 건만 재시도한다.
 - [ ] `SETTLEMENT_IN_PROGRESS`, `SETTLED` 상태는 VOIDED 처리할 수 없다.
-- [ ] 환불 타임아웃은 `REFUND_UNKNOWN`으로 변경한다.
+- [ ] 환불은 item별 idempotencyKey를 사용하고 환불 타임아웃은 `REFUND_UNKNOWN`으로 변경한다.
 - [ ] Scheduler는 `limit` 기반 chunk 처리를 한다.
