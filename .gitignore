@@ -1,8 +1,83 @@
-.DS_Store
-
 # 관리 도구
 generate-docs.sh
 prompts/
 
-# env 파일
+
+# =========================
+# IntelliJ
+# =========================
+.idea/
+*.iml
+out/
+
+# =========================
+# Gradle
+# =========================
+.gradle/
+build/
+
+# =========================
+# Java
+# =========================
+*.class
+
+# =========================
+# Logs
+# =========================
+logs/
+*.log
+
+# =========================
+# Spring Boot
+# =========================
+application-secret.yml
+application-secret.yaml
+application-secret.properties
+
+# =========================
+# Environment Variables
+# =========================
 .env
+.env.*
+!.env.example
+
+# =========================
+# OS Files
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# Docker
+# =========================
+mysql_data/
+redis_data/
+
+# =========================
+# VSCode
+# =========================
+.vscode/
+
+# =========================
+# Generated files
+# =========================
+*.pid
+*.seed
+*.pid.lock
+
+# =========================
+# Test Results
+# =========================
+target/
+surefire-reports/
+
+# =========================
+# Local Config
+# =========================
+application-local.yml
+application-local.yaml
+application-local.properties
+
+application-prod.yml
+application-prod.yaml
+application-prod.properties
