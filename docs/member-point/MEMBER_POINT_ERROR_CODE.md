@@ -134,7 +134,15 @@
 
 ---
 
-### 3-9. GET /api/v1/points/transactions (거래 상태 조회)
+### 3-9. POST /api/v1/members/batch (회원 정보 배치 조회)
+
+| ErrorCode | 발생 상황 |
+|---|---|
+| `VALIDATION_FAILED` | memberIds 누락 또는 빈 배열 |
+
+---
+
+### 3-10. GET /api/v1/points/transactions (거래 상태 조회)
 
 | ErrorCode | 발생 상황 |
 |---|---|
@@ -142,7 +150,7 @@
 
 ---
 
-### 3-10. POST /api/v1/points/earn (포인트 적립)
+### 3-11. POST /api/v1/points/earn (포인트 적립)
 
 | ErrorCode | 발생 상황 |
 |---|---|
@@ -155,7 +163,7 @@
 
 ---
 
-### 3-11. POST /api/v1/points/spend (포인트 차감)
+### 3-12. POST /api/v1/points/spend (포인트 차감)
 
 | ErrorCode | 발생 상황 |
 |---|---|
@@ -169,7 +177,7 @@
 
 ---
 
-### 3-12. POST /api/v1/points/settlements (정산 일괄 지급)
+### 3-13. POST /api/v1/points/settlements (정산 일괄 지급)
 
 | ErrorCode | 발생 상황 |
 |---|---|
@@ -181,7 +189,7 @@
 
 ---
 
-### 3-13. POST /api/v1/points/refunds (무효 환불)
+### 3-14. POST /api/v1/points/refunds (무효 환불)
 
 | ErrorCode | 발생 상황 |
 |---|---|
