@@ -1,7 +1,7 @@
 # API_SPEC.md - Battle Service
 
-> Battle Service의 클라이언트 대상 API 명세이다.  
-> 서비스 간 내부 연계 API는 루트 `API_SPEC.md`를 참조한다.
+> Battle Service의 클라이언트 대상 API + 서비스 간 내부 연계 API 명세이다.
+> 에러 코드 상세는 `docs/battle/ERROR_CODE.md` 참조.
 
 ---
 
@@ -21,9 +21,21 @@ JWT Bearer Token을 사용한다.
 Authorization: Bearer {token}
 ```
 
+내부 서비스 간 호출은 별도 내부 인증을 사용한다 (게이트웨이 차단 + 서비스 토큰).
+
 ### 1-3. 응답 포맷
 
 모든 응답은 공통 `ApiResponse<T>` 포맷을 따른다. `CONVENTION.md` 섹션 2 참조.
+
+### 1-4. 정책 상수
+
+| 항목 | 값 |
+|---|---|
+| Battle title 최대 길이 | 255자 |
+| Battle option 최대 길이 | 100자 |
+| 댓글 content 최대 길이 | 500자 |
+| 페이징 기본 size | Battle 20, 댓글 10 |
+| 종료 후 결과 전체 공개 기간 | 72시간 |
 
 ---
 
@@ -44,7 +56,9 @@ POST /api/v1/battles
   "title": "성수 vs 연남, 데이트하기 어디가 더 좋을까?",
   "optionA": "성수",
   "optionB": "연남",
-  "description": "주말 데이트 코스로 어디가 더 매력적인지 투표해주세요!"
+  "description": "주말 데이트 코스로 어디가 더 매력적인지 투표해주세요!",
+  "startAt": "2026-05-29T00:00:00",
+  "endAt": "2026-06-05T00:00:00"
 }
 ```
 
@@ -61,6 +75,8 @@ POST /api/v1/battles
     "optionA": "성수",
     "optionB": "연남",
     "status": "PENDING",
+    "startAt": "2026-05-29T00:00:00",
+    "endAt": "2026-06-05T00:00:00",
     "createdAt": "2026-05-28T10:00:00"
   },
   "timestamp": "2026-05-28T10:00:00"
@@ -69,10 +85,12 @@ POST /api/v1/battles
 
 **Error Codes**
 
-| 에러 코드 | 상황 |
-|---|---|
-| UNAUTHORIZED | JWT 토큰 없음 또는 만료 |
-| POINT_INSUFFICIENT | Battle 생성권 부족 |
+| ErrorCode | HTTP | 상황 |
+|---|---:|---|
+| `UNAUTHORIZED` | 401 | JWT 없음/만료 |
+| `VALIDATION_FAILED` | 400 | 필수 필드 누락, 길이 초과 |
+| `BATTLE_INVALID_PERIOD` | 400 | endAt이 startAt 이전이거나 과거 |
+| `POINT_INSUFFICIENT` | 400 | Battle 생성권 부족 |
 
 ---
 
@@ -92,34 +110,13 @@ GET /api/v1/battles?status={status}&page={page}&size={size}
 | page | Integer | N | 페이지 번호 (기본: 0) |
 | size | Integer | N | 페이지 크기 (기본: 20) |
 
-**Response**
+**Response**: (기존 형식 유지)
 
-```json
-{
-  "success": true,
-  "errorCode": null,
-  "message": null,
-  "data": {
-    "content": [
-      {
-        "battleId": 42,
-        "title": "성수 vs 연남, 데이트하기 어디가 더 좋을까?",
-        "optionA": "성수",
-        "optionB": "연남",
-        "status": "ACTIVE",
-        "totalVoteCount": 125,
-        "hasVoted": false,
-        "createdAt": "2026-05-28T10:00:00"
-      }
-    ],
-    "totalElements": 50,
-    "totalPages": 3,
-    "size": 20,
-    "number": 0
-  },
-  "timestamp": "2026-05-28T10:00:00"
-}
-```
+**Error Codes**
+
+| ErrorCode | HTTP | 상황 |
+|---|---:|---|
+| `VALIDATION_FAILED` | 400 | 잘못된 status 값 |
 
 ---
 
@@ -131,35 +128,13 @@ GET /api/v1/battles/{battleId}
 
 **인증**: 불필요
 
-**Response**
-
-```json
-{
-  "success": true,
-  "errorCode": null,
-  "message": null,
-  "data": {
-    "battleId": 42,
-    "title": "성수 vs 연남, 데이트하기 어디가 더 좋을까?",
-    "optionA": "성수",
-    "optionB": "연남",
-    "description": "주말 데이트 코스로 어디가 더 매력적인지 투표해주세요!",
-    "status": "ACTIVE",
-    "totalVoteCount": 125,
-    "hasVoted": false,
-    "myVoteOption": null,
-    "createdAt": "2026-05-28T10:00:00",
-    "closedAt": null
-  },
-  "timestamp": "2026-05-28T10:00:00"
-}
-```
+**Response**: (기존 형식 유지)
 
 **Error Codes**
 
-| 에러 코드 | 상황 |
-|---|---|
-| NOT_FOUND | Battle 없음 |
+| ErrorCode | HTTP | 상황 |
+|---|---:|---|
+| `BATTLE_NOT_FOUND` | 404 | 존재하지 않거나 soft delete됨 |
 
 ---
 
@@ -171,28 +146,16 @@ PATCH /api/v1/battles/{battleId}/approve
 
 **인증**: 필요 (관리자)
 
-**Response**
-
-```json
-{
-  "success": true,
-  "errorCode": null,
-  "message": null,
-  "data": {
-    "battleId": 42,
-    "status": "ACTIVE"
-  },
-  "timestamp": "2026-05-28T10:00:00"
-}
-```
+**Response**: (기존 형식 유지, status=ACTIVE)
 
 **Error Codes**
 
-| 에러 코드 | 상황 |
-|---|---|
-| FORBIDDEN | 관리자 권한 없음 |
-| NOT_FOUND | Battle 없음 |
-| BATTLE_CLOSED | 이미 처리된 Battle |
+| ErrorCode | HTTP | 상황 |
+|---|---:|---|
+| `UNAUTHORIZED` | 401 | — |
+| `FORBIDDEN` | 403 | 관리자 권한 없음 |
+| `BATTLE_NOT_FOUND` | 404 | — |
+| `BATTLE_INVALID_STATUS` | 409 | PENDING 상태가 아님 (이미 승인/거절/취소됨) |
 
 ---
 
@@ -204,28 +167,9 @@ PATCH /api/v1/battles/{battleId}/reject
 
 **인증**: 필요 (관리자)
 
-**Response**
+**Response**: (기존 형식 유지, status=CANCELLED)
 
-```json
-{
-  "success": true,
-  "errorCode": null,
-  "message": null,
-  "data": {
-    "battleId": 42,
-    "status": "CANCELLED"
-  },
-  "timestamp": "2026-05-28T10:00:00"
-}
-```
-
-**Error Codes**
-
-| 에러 코드 | 상황 |
-|---|---|
-| FORBIDDEN | 관리자 권한 없음 |
-| NOT_FOUND | Battle 없음 |
-| BATTLE_CLOSED | 이미 처리된 Battle |
+**Error Codes**: 2-4와 동일
 
 ---
 
@@ -237,27 +181,16 @@ PATCH /api/v1/battles/{battleId}/cancel
 
 **인증**: 필요 (관리자)
 
-**Response**
-
-```json
-{
-  "success": true,
-  "errorCode": null,
-  "message": null,
-  "data": {
-    "battleId": 42,
-    "status": "CANCELLED"
-  },
-  "timestamp": "2026-05-28T10:00:00"
-}
-```
+**Response**: (기존 형식 유지)
 
 **Error Codes**
 
-| 에러 코드 | 상황 |
-|---|---|
-| FORBIDDEN | 관리자 권한 없음 |
-| NOT_FOUND | Battle 없음 |
+| ErrorCode | HTTP | 상황 |
+|---|---:|---|
+| `UNAUTHORIZED` | 401 | — |
+| `FORBIDDEN` | 403 | 관리자 권한 없음 |
+| `BATTLE_NOT_FOUND` | 404 | — |
+| `BATTLE_INVALID_STATUS` | 409 | 이미 종료/취소된 Battle |
 
 ---
 
@@ -283,36 +216,25 @@ POST /api/v1/battles/{battleId}/votes
 |---|---|---|---|
 | option | String | Y | "A" 또는 "B" |
 
-**Response**
+**Response**: (기존 형식 유지)
 
-```json
-{
-  "success": true,
-  "errorCode": null,
-  "message": null,
-  "data": {
-    "battleId": 42,
-    "myVoteOption": "A",
-    "result": {
-      "totalVoteCount": 126,
-      "optionACount": 76,
-      "optionBCount": 50,
-      "optionAPercentage": 60.32,
-      "optionBPercentage": 39.68
-    }
-  },
-  "timestamp": "2026-05-28T10:00:00"
-}
-```
+**상태 변화 메모**
+
+- 정상: `battle_vote` 생성 + `battle.option_a_count`/`vote_count` +1, 그 후 Member-Point 보상 호출
+- Point 호출 Timeout: 투표 유지, `point_reward_retry_queue` 적재 (사용자에게는 투표 성공 응답)
+- 자세한 흐름은 `docs/battle/ERROR_CODE.md` 4-1 참조
 
 **Error Codes**
 
-| 에러 코드 | 상황 |
-|---|---|
-| UNAUTHORIZED | JWT 토큰 없음 또는 만료 |
-| ALREADY_VOTED | 이미 투표 완료 |
-| BATTLE_CLOSED | 종료된 Battle |
-| NOT_FOUND | Battle 없음 |
+| ErrorCode | HTTP | 상황 |
+|---|---:|---|
+| `UNAUTHORIZED` | 401 | — |
+| `VALIDATION_FAILED` | 400 | option 필드 누락 |
+| `BATTLE_INVALID_OPTION` | 400 | A/B 외의 값 |
+| `BATTLE_NOT_FOUND` | 404 | — |
+| `BATTLE_NOT_ACTIVE` | 400 | PENDING 상태 (아직 시작 전) |
+| `BATTLE_CLOSED` | 409 | CLOSED/SETTLED/CANCELLED |
+| `BATTLE_ALREADY_VOTED` | 409 | 중복 투표 |
 
 ---
 
@@ -324,126 +246,13 @@ GET /api/v1/battles/{battleId}/result
 
 **인증**: 선택
 
-**Response (진행 중 + 미투표/비회원)**
-
-```json
-{
-  "success": true,
-  "errorCode": null,
-  "message": null,
-  "data": {
-    "battleId": 42,
-    "status": "ACTIVE",
-    "totalVoteCount": 126,
-    "hasVoted": false,
-    "result": null
-  },
-  "timestamp": "2026-05-28T10:00:00"
-}
-```
-
-**Response (진행 중 + 투표 완료)**
-
-```json
-{
-  "success": true,
-  "errorCode": null,
-  "message": null,
-  "data": {
-    "battleId": 42,
-    "status": "ACTIVE",
-    "totalVoteCount": 126,
-    "hasVoted": true,
-    "myVoteOption": "A",
-    "result": {
-      "optionACount": 76,
-      "optionBCount": 50,
-      "optionAPercentage": 60.32,
-      "optionBPercentage": 39.68
-    }
-  },
-  "timestamp": "2026-05-28T10:00:00"
-}
-```
-
-**Response (종료 직후 + 투표 완료)**
-
-```json
-{
-  "success": true,
-  "errorCode": null,
-  "message": null,
-  "data": {
-    "battleId": 42,
-    "status": "CLOSED",
-    "totalVoteCount": 320,
-    "hasVoted": true,
-    "myVoteOption": "A",
-    "result": {
-      "optionACount": 195,
-      "optionBCount": 125,
-      "optionAPercentage": 60.94,
-      "optionBPercentage": 39.06,
-      "crossAnalysis": {
-        "by_age": {
-          "20대": { "optionAPercentage": 65.2, "optionBPercentage": 34.8 },
-          "30대": { "optionAPercentage": 58.1, "optionBPercentage": 41.9 }
-        },
-        "by_gender": {
-          "남성": { "optionAPercentage": 62.5, "optionBPercentage": 37.5 },
-          "여성": { "optionAPercentage": 59.3, "optionBPercentage": 40.7 }
-        }
-      }
-    }
-  },
-  "timestamp": "2026-05-28T10:00:00"
-}
-```
-
-**Response (종료 후 72시간 경과)**
-
-```json
-{
-  "success": true,
-  "errorCode": null,
-  "message": null,
-  "data": {
-    "battleId": 42,
-    "status": "CLOSED",
-    "totalVoteCount": 320,
-    "hasVoted": false,
-    "result": {
-      "optionAPercentage": 60.94,
-      "optionBPercentage": 39.06
-    }
-  },
-  "timestamp": "2026-05-28T10:00:00"
-}
-```
-
-**Response (종료 직후 + 미투표/비회원)**
-
-```json
-{
-  "success": true,
-  "errorCode": null,
-  "message": null,
-  "data": {
-    "battleId": 42,
-    "status": "CLOSED",
-    "totalVoteCount": 320,
-    "hasVoted": false,
-    "result": null
-  },
-  "timestamp": "2026-05-28T10:00:00"
-}
-```
+**Response**: (기존 형식 유지 - 상태/투표여부/72h 경과 분기)
 
 **Error Codes**
 
-| 에러 코드 | 상황 |
-|---|---|
-| NOT_FOUND | Battle 없음 |
+| ErrorCode | HTTP | 상황 |
+|---|---:|---|
+| `BATTLE_NOT_FOUND` | 404 | — |
 
 ---
 
@@ -455,39 +264,22 @@ GET /api/v1/battles/{battleId}/result/cross
 
 **인증**: 필요
 
-**Response**
+**Response**: (기존 형식 유지)
 
-```json
-{
-  "success": true,
-  "errorCode": null,
-  "message": null,
-  "data": {
-    "battleId": 42,
-    "crossAnalysis": {
-      "by_residence": {
-        "강남구": { "optionAPercentage": 45.2, "optionBPercentage": 54.8, "count": 31 },
-        "마포구": { "optionAPercentage": 71.4, "optionBPercentage": 28.6, "count": 42 },
-        "성동구": { "optionAPercentage": 83.3, "optionBPercentage": 16.7, "count": 18 }
-      },
-      "by_age_residence": {
-        "20대_강남구": { "optionAPercentage": 50.0, "optionBPercentage": 50.0, "count": 16 },
-        "30대_강남구": { "optionAPercentage": 40.0, "optionBPercentage": 60.0, "count": 15 }
-      }
-    }
-  },
-  "timestamp": "2026-05-28T10:00:00"
-}
-```
+**상태 변화 메모**
+
+- Point 차감은 검증 통과 후에만 호출. 검증 실패(4xx)는 Point 차감 없음.
+- `Idempotency-Key` 헤더 필수 (Member-Point spend API 호출 시).
 
 **Error Codes**
 
-| 에러 코드 | 상황 |
-|---|---|
-| UNAUTHORIZED | JWT 토큰 없음 또는 만료 |
-| POINT_INSUFFICIENT | Point 부족 |
-| NOT_FOUND | Battle 없음 |
-| BATTLE_CLOSED | 진행 중인 Battle (결과 비공개) |
+| ErrorCode | HTTP | 상황 |
+|---|---:|---|
+| `UNAUTHORIZED` | 401 | — |
+| `BATTLE_NOT_FOUND` | 404 | — |
+| `BATTLE_RESULT_NOT_AVAILABLE` | 409 | 진행 중인 Battle (CLOSED 아님) |
+| `POINT_INSUFFICIENT` | 400 | 30P 부족 |
+| `IDEMPOTENCY_KEY_REQUIRED` | 400 | 헤더 누락 |
 
 ---
 
@@ -499,36 +291,9 @@ GET /api/v1/battles/{battleId}/result/certified
 
 **인증**: 필요
 
-**Response**
+**Response**: (기존 형식 유지)
 
-```json
-{
-  "success": true,
-  "errorCode": null,
-  "message": null,
-  "data": {
-    "battleId": 42,
-    "certifiedOnly": true,
-    "totalCertifiedCount": 89,
-    "result": {
-      "optionACount": 58,
-      "optionBCount": 31,
-      "optionAPercentage": 65.17,
-      "optionBPercentage": 34.83
-    }
-  },
-  "timestamp": "2026-05-28T10:00:00"
-}
-```
-
-**Error Codes**
-
-| 에러 코드 | 상황 |
-|---|---|
-| UNAUTHORIZED | JWT 토큰 없음 또는 만료 |
-| POINT_INSUFFICIENT | Point 부족 |
-| NOT_FOUND | Battle 없음 |
-| BATTLE_CLOSED | 진행 중인 Battle (결과 비공개) |
+**Error Codes**: 3-3과 동일
 
 ---
 
@@ -550,30 +315,18 @@ POST /api/v1/battles/{battleId}/comments
 }
 ```
 
-**Response**
-
-```json
-{
-  "success": true,
-  "errorCode": null,
-  "message": null,
-  "data": {
-    "commentId": 15,
-    "content": "성수는 감성 카페가 많고, 연남은 독특한 맛집들이 많아서 고민되네요!",
-    "authorNickname": "데이트고민러",
-    "createdAt": "2026-05-28T10:00:00"
-  },
-  "timestamp": "2026-05-28T10:00:00"
-}
-```
+**Response**: (기존 형식 유지)
 
 **Error Codes**
 
-| 에러 코드 | 상황 |
-|---|---|
-| UNAUTHORIZED | JWT 토큰 없음 또는 만료 |
-| NOT_FOUND | Battle 없음 |
-| BATTLE_CLOSED | 종료된 Battle |
+| ErrorCode | HTTP | 상황 |
+|---|---:|---|
+| `UNAUTHORIZED` | 401 | — |
+| `VALIDATION_FAILED` | 400 | content 빈 값 |
+| `BATTLE_COMMENT_TOO_LONG` | 400 | 500자 초과 |
+| `BATTLE_NOT_FOUND` | 404 | — |
+| `BATTLE_NOT_ACTIVE` | 400 | PENDING 상태 |
+| `BATTLE_CLOSED` | 409 | 종료된 Battle |
 
 ---
 
@@ -585,44 +338,13 @@ GET /api/v1/battles/{battleId}/comments?page={page}&size={size}
 
 **인증**: 불필요
 
-**Query Parameters**
-
-| 파라미터 | 타입 | 필수 | 설명 |
-|---|---|---|---|
-| page | Integer | N | 페이지 번호 (기본: 0) |
-| size | Integer | N | 페이지 크기 (기본: 10) |
-
-**Response**
-
-```json
-{
-  "success": true,
-  "errorCode": null,
-  "message": null,
-  "data": {
-    "content": [
-      {
-        "commentId": 15,
-        "content": "성수는 감성 카페가 많고, 연남은 독특한 맛집들이 많아서 고민되네요!",
-        "authorNickname": "데이트고민러",
-        "isMyComment": false,
-        "createdAt": "2026-05-28T10:00:00"
-      }
-    ],
-    "totalElements": 23,
-    "totalPages": 3,
-    "size": 10,
-    "number": 0
-  },
-  "timestamp": "2026-05-28T10:00:00"
-}
-```
+**Response**: (기존 형식 유지)
 
 **Error Codes**
 
-| 에러 코드 | 상황 |
-|---|---|
-| NOT_FOUND | Battle 없음 |
+| ErrorCode | HTTP | 상황 |
+|---|---:|---|
+| `BATTLE_NOT_FOUND` | 404 | — |
 
 ---
 
@@ -648,15 +370,17 @@ DELETE /api/v1/battles/{battleId}/comments/{commentId}
 
 **Error Codes**
 
-| 에러 코드 | 상황 |
-|---|---|
-| UNAUTHORIZED | JWT 토큰 없음 또는 만료 |
-| FORBIDDEN | 본인 댓글 아님 |
-| NOT_FOUND | Battle 또는 댓글 없음 |
+| ErrorCode | HTTP | 상황 |
+|---|---:|---|
+| `UNAUTHORIZED` | 401 | — |
+| `BATTLE_COMMENT_FORBIDDEN` | 403 | 본인 댓글 아님 |
+| `BATTLE_COMMENT_NOT_FOUND` | 404 | 존재하지 않거나 이미 삭제됨 |
 
 ---
 
 ## 5. 내부 연계 API
+
+> 외부 노출 차단. 게이트웨이에서 외부 요청 차단 + 서비스 간 인증 토큰 검증 후 라우팅.
 
 ### 5-1. Battle 투표 원본 데이터 조회 (Insight Service 전용)
 
@@ -666,6 +390,35 @@ GET /api/v1/battles/{battleId}/votes/raw
 
 **인증**: 내부 서비스 인증
 
+**Response**: (기존 형식 유지)
+
+**Error Codes**
+
+| ErrorCode | HTTP | 상황 |
+|---|---:|---|
+| `FORBIDDEN` | 403 | 내부 서비스 인증 실패 |
+| `BATTLE_NOT_FOUND` | 404 | — |
+
+---
+
+### 5-2. 댓글 단건 조회 (방문 인증용, Insight Service 전용)
+
+```
+GET /api/v1/battles/comments/{commentId}
+```
+
+**용도**: Insight-Reputation Service의 댓글 기반 방문 인증(`visit_certification.method=COMMENT`) 검증.
+사용자가 "이 댓글로 지역 방문을 인증한다"고 요청하면 Insight가 이 API를 호출하여
+댓글 존재 여부와 작성자/Battle 매핑을 확인한다.
+
+**인증**: 내부 서비스 인증
+
+**Path Parameters**
+
+| 파라미터 | 타입 | 필수 | 설명 |
+|---|---|---|---|
+| commentId | Long | Y | 댓글 ID |
+
 **Response**
 
 ```json
@@ -674,22 +427,36 @@ GET /api/v1/battles/{battleId}/votes/raw
   "errorCode": null,
   "message": null,
   "data": {
+    "commentId": 15,
     "battleId": 42,
-    "title": "성수 vs 연남, 데이트하기 어디가 더 좋을까?",
-    "optionA": "성수",
-    "optionB": "연남",
-    "totalVoteCount": 320,
-    "optionACount": 195,
-    "optionBCount": 125,
-    "status": "CLOSED"
+    "memberId": 678,
+    "createdAt": "2026-05-28T10:00:00"
   },
   "timestamp": "2026-05-28T10:00:00"
 }
 ```
 
+**응답 필드 정책**
+
+- `content` (본문)와 닉네임은 응답에 포함하지 않음. 인증 검증에 불필요하고
+  응답 비대화·개인정보 노출 최소화를 위함.
+- soft delete된 댓글은 `BATTLE_COMMENT_NOT_FOUND`로 응답 (인증 무효 처리).
+  → 인증 후 댓글을 지우는 우회를 방지.
+- 향후 Insight가 추가 필드를 요구할 경우 합의 후 응답 스키마 확장.
+
 **Error Codes**
 
-| 에러 코드 | 상황 |
+| ErrorCode | HTTP | 상황 |
+|---|---:|---|
+| `FORBIDDEN` | 403 | 내부 서비스 인증 실패 |
+| `BATTLE_COMMENT_NOT_FOUND` | 404 | 존재하지 않거나 soft delete됨 |
+
+---
+
+## 6. 변경 이력
+
+| 일자 | 내용 |
 |---|---|
-| FORBIDDEN | 내부 서비스 인증 실패 |
-| NOT_FOUND | Battle 없음 |
+| 2026-05-28 | 초안 작성 |
+| 2026-05-29 | 에러 코드 가이드 기준 정비 (도메인 prefix, HTTP 상태 코드, 추가 케이스) |
+| 2026-05-29 | 5-2 댓글 단건 조회 내부 API 추가 (Insight 요청) |
