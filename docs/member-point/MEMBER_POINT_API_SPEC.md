@@ -435,7 +435,7 @@ Authorization: Bearer {JWT}
 ### 3-0. 회원 정보 배치 조회
 
 ```
-GET /api/v1/members/batch?ids=1,2,3
+POST /api/v1/members/batch
 ```
 
 Insight Service가 Battle/Market 투표·예측 데이터를 분석할 때
@@ -443,11 +443,16 @@ memberId 목록으로 회원의 연령대/성별/거주지 정보를 한 번에 
 
 **인증**: 불필요 (내부 서비스 간 호출)
 
-**Query Parameters**
+**Request Body**
+```json
+{
+  "memberIds": [1, 2, 3, 4, 5]
+}
+```
 
-| 파라미터 | 타입 | 필수 | 설명 |
+| 필드 | 타입 | 필수 | 설명 |
 |---|---|---|---|
-| ids | String | Y | 조회할 memberId 목록 (콤마 구분, 최대 100개) |
+| memberIds | List\<Long\> | Y | 조회할 memberId 목록 |
 
 **Response 200**
 ```json
@@ -460,14 +465,14 @@ memberId 목록으로 회원의 연령대/성별/거주지 정보를 한 번에 
       "memberId": 1,
       "ageGroup": "20대",
       "gender": "MALE",
-      "residenceSido": "서울특별시",
+      "residenceSido": "서울",
       "residenceSigu": "마포구"
     },
     {
       "memberId": 2,
       "ageGroup": "30대",
       "gender": "FEMALE",
-      "residenceSido": "경기도",
+      "residenceSido": "경기",
       "residenceSigu": "성남시"
     }
   ],
@@ -478,13 +483,13 @@ memberId 목록으로 회원의 연령대/성별/거주지 정보를 한 번에 
 **주의사항**
 - 존재하지 않는 memberId는 응답에서 제외 (에러 반환 안 함)
 - 탈퇴 회원 (deleted_at 존재)도 분석 대상이므로 포함해서 반환
-- 최대 100개 초과 시 `VALIDATION_FAILED` 반환
+- memberIds가 비어있으면 `VALIDATION_FAILED` 반환
 
 **Error Codes**
 
 | 에러 코드 | 상황 |
 |---|---|
-| `VALIDATION_FAILED` | ids 파라미터 누락 또는 100개 초과 |
+| `VALIDATION_FAILED` | memberIds 누락 또는 빈 배열 |
 
 ---
 

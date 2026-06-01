@@ -134,11 +134,11 @@
 
 ---
 
-### 3-9. GET /api/v1/members/batch (회원 정보 배치 조회)
+### 3-9. POST /api/v1/members/batch (회원 정보 배치 조회)
 
 | ErrorCode | 발생 상황 |
 |---|---|
-| `VALIDATION_FAILED` | ids 파라미터 누락 또는 100개 초과 |
+| `VALIDATION_FAILED` | memberIds 누락 또는 빈 배열 |
 
 ---
 
