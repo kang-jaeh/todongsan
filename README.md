@@ -23,38 +23,7 @@
 
 ## Architecture
 
-```mermaid
-flowchart TB
-    client["Client"]
-
-    subgraph gw["API Gateway"]
-        gateway["Spring Cloud Gateway<br/>JWT 인증·라우팅"]
-    end
-
-    subgraph svc["Services (DB per service)"]
-        mp["Member-Point<br/>회원·포인트 지갑"]
-        battle["Battle<br/>블라인드 투표"]
-        market["Market<br/>포인트 예측·정산"]
-        insight["Insight-Reputation<br/>AI 요약·신뢰도"]
-    end
-
-    client --> gateway
-    gateway --> mp
-    gateway --> battle
-    gateway --> market
-    gateway --> insight
-
-    battle -->|포인트 지급| mp
-    market -->|차감·정산| mp
-    market -->|예측 정확도| insight
-    insight -->|원본 조회| battle
-    insight -->|원본 조회| market
-
-    mp -.-> dbmp[("MySQL")]
-    battle -.-> dbb[("MySQL")]
-    market -.-> dbm[("MySQL")]
-    insight -.-> dbi[("MySQL")]
-```
+![동네대전 전체 아키텍처](docs/images/todongsan-architecture.svg)
 
 ## Tech Stack
 

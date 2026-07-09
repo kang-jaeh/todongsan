@@ -24,49 +24,16 @@
 
 ## 1. 도메인 상태 흐름
 
+![Market 도메인 상태 흐름](images/todongsan-market-domain-states.svg)
+
 ### 예측(Prediction) 상태
 
 포인트 차감은 외부 서비스 호출이라 "성공/실패"만으로는 부족합니다. **타임아웃·응답 불확실**을 별도 상태(`POINT_UNKNOWN`)로 분리해, 나중에 대사로 보정하도록 설계했습니다.
-
-```mermaid
-stateDiagram-v2
-    [*] --> POINT_PENDING: 예측 요청 (차감 대기)
-    POINT_PENDING --> CONFIRMED: 포인트 차감 성공
-    POINT_PENDING --> FAILED: 포인트 부족 등 명확한 실패
-    POINT_PENDING --> POINT_UNKNOWN: 외부 타임아웃·응답 불확실
-    POINT_UNKNOWN --> CONFIRMED: 대사 후 성공 확정
-    POINT_UNKNOWN --> FAILED: 대사 후 실패 확정
-    CONFIRMED --> SETTLED: 정산 지급 완료
-    CONFIRMED --> REFUND_PENDING: 마켓 무효 → 환불 대상
-    REFUND_PENDING --> REFUNDED: 환불 완료
-    REFUND_PENDING --> REFUND_UNKNOWN: 환불 결과 불확실
-    REFUND_UNKNOWN --> REFUND_PENDING: 재시도 후 실패
-    REFUND_UNKNOWN --> REFUNDED: 재시도 후 성공
-```
 
 > **정산 대상은 `CONFIRMED` 예측만 포함**합니다. 차감이 확정되지 않은 참여가 정산에 섞이지 않도록 하는 것이 정합성의 출발점입니다.
 > 위 다이어그램은 대표 상태 흐름을 요약한 것이며, 상태별 허용 전이와 예외 조건은 Market API Spec과 실제 서비스 코드를 기준으로 합니다.
 
 ### 마켓(Market) 상태
-
-```mermaid
-stateDiagram-v2
-    [*] --> PENDING: 등록·검수 대기
-    PENDING --> ACTIVE: 승인·오픈
-    PENDING --> VOIDED: 오픈 전 무효
-
-    ACTIVE --> CLOSED: 예측 마감
-    ACTIVE --> VOIDED: 진행 중 무효
-
-    CLOSED --> DATA_PENDING: 판정 데이터 대기
-    CLOSED --> SETTLEMENT_IN_PROGRESS: 정산 시작
-    CLOSED --> VOIDED: 정산 전 무효
-
-    DATA_PENDING --> SETTLEMENT_IN_PROGRESS: 데이터 확보
-    DATA_PENDING --> VOIDED: 데이터 미확보 무효
-
-    SETTLEMENT_IN_PROGRESS --> SETTLED: 정산 완료
-```
 
 > 위 다이어그램은 대표 상태 흐름을 요약한 것이며, 상태별 허용 전이와 예외 조건은 Market API Spec과 실제 서비스 코드를 기준으로 합니다.
 
@@ -92,17 +59,7 @@ stateDiagram-v2
 ### 2-3. 트랜잭션 경계 최적화
 예측 확정은 DB 행 잠금 구간과 외부 포인트 서비스 호출이 함께 일어납니다. 외부 호출을 **잠금 트랜잭션 안**에 두면, 외부 지연 동안 같은 마켓의 다른 예측이 전부 막힙니다.
 
-```mermaid
-flowchart LR
-    subgraph B[" Before — 외부 호출이 락 안"]
-        direction TB
-        b1["BEGIN TX + LOCK(market, option, prediction)"] --> b2["외부 포인트 서비스 호출<br/>(지연 2000ms 동안 락 점유)"] --> b3["상태 갱신"] --> b4["COMMIT"]
-    end
-    subgraph A[" After — 외부 호출을 락 밖으로"]
-        direction TB
-        a1["외부 포인트 서비스 호출<br/>(락 밖)"] --> a2["BEGIN TX + LOCK"] --> a3["결과 반영·상태 갱신<br/>(짧은 락 점유)"] --> a4["COMMIT"]
-    end
-```
+![트랜잭션 경계 최적화 전후 비교](images/todongsan-tx-boundary.svg)
 
 외부 호출을 락 밖으로 분리해 **락 점유 시간을 2018ms → 53ms(약 97%)로 단축**했습니다. (실험④)
 

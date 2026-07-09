@@ -1,0 +1,82 @@
+<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1480 690' font-family="Inter, 'Segoe UI', 'Noto Sans CJK KR', 'Malgun Gothic', sans-serif">
+<defs>
+  <marker id='ah' markerWidth='9' markerHeight='9' refX='7.5' refY='4' orient='auto' markerUnits='userSpaceOnUse'><path d='M0,0 L8,4 L0,8 Z' fill='#7C8698'/></marker>
+  <filter id='sh' x='-20%' y='-20%' width='140%' height='140%'><feDropShadow dx='0' dy='1.5' stdDeviation='2' flood-color='#101828' flood-opacity='0.08'/></filter>
+</defs>
+<rect width='1480' height='690' fill='#FFFFFF'/>
+
+<!-- ===== MARKET ===== -->
+<rect x='40' y='40' width='1400' height='290' rx='12' fill='none' stroke='#C5CDD8' stroke-width='1.2' stroke-dasharray='6 5'/>
+<text x='62' y='72' font-size='12' font-weight='700' fill='#8A94A3' letter-spacing='1.5'>MARKET · 상태 흐름</text>
+
+<g fill='none' stroke='#7C8698' stroke-width='1.8'>
+  <path d='M96,140 L106,140' marker-end='url(#ah)'/>
+  <path d='M280,140 L346,140' marker-end='url(#ah)'/>
+  <path d='M520,140 L586,140' marker-end='url(#ah)'/>
+  <path d='M750,125 L1196,125' marker-end='url(#ah)'/>
+  <path d='M670,175 L670,242 L816,242' marker-end='url(#ah)'/>
+  <path d='M1024,228 L1120,228 L1120,155 L1196,155' marker-end='url(#ah)'/>
+  <path d='M1024,256 L1196,256' marker-end='url(#ah)'/>
+  <path d='M435,175 L435,300 L1300,300 L1300,284' marker-end='url(#ah)'/>
+</g>
+<g><rect x='288' y='133' width='40' height='14' fill='#fff'/><text x='308' y='144' text-anchor='middle' font-size='10' font-weight='600' fill='#6B7280'>승인</text></g>
+<g><rect x='524' y='133' width='50' height='14' fill='#fff'/><text x='549' y='144' text-anchor='middle' font-size='10' font-weight='600' fill='#6B7280'>마감일</text></g>
+<g><rect x='860' y='118' width='130' height='14' fill='#fff'/><text x='925' y='129' text-anchor='middle' font-size='10' font-weight='600' fill='#6B7280'>판정 데이터 확정 · 정산</text></g>
+<g><rect x='700' y='235' width='84' height='14' fill='#fff'/><text x='742' y='246' text-anchor='middle' font-size='10' font-weight='600' fill='#6B7280'>데이터 미수신</text></g>
+<g><rect x='1028' y='211' width='76' height='14' fill='#fff'/><text x='1066' y='222' text-anchor='middle' font-size='10' font-weight='600' fill='#6B7280'>7일 내 공개</text></g>
+<g><rect x='1054' y='249' width='96' height='14' fill='#fff'/><text x='1102' y='260' text-anchor='middle' font-size='10' font-weight='600' fill='#6B7280'>7일 초과 미공개</text></g>
+<g><rect x='600' y='293' width='130' height='14' fill='#fff'/><text x='665' y='304' text-anchor='middle' font-size='10' font-weight='600' fill='#6B7280'>조기 취소 · 관리자 오류</text></g>
+<circle cx='90' cy='140' r='6' fill='#475569'/>
+<g filter='url(#sh)'><rect x='110' y='105' width='170' height='70' rx='18' fill='#FFFFFF' stroke='#CBD5E1' stroke-width='1.4'/></g>
+<text x='195' y='136' text-anchor='middle' font-size='13.5' font-weight='700' fill='#1F2937'>등록 · 검수</text>
+<text x='195' y='155' text-anchor='middle' font-size='10' fill='#8A94A3'>관리자 승인 필수</text>
+<g filter='url(#sh)'><rect x='350' y='105' width='170' height='70' rx='18' fill='#EFF6FF' stroke='#3B82F6' stroke-width='1.4'/></g>
+<text x='435' y='136' text-anchor='middle' font-size='13.5' font-weight='700' fill='#1F2937'>OPEN</text>
+<text x='435' y='155' text-anchor='middle' font-size='10' fill='#8A94A3'>예측 참여 · 10~500P</text>
+<g filter='url(#sh)'><rect x='590' y='105' width='160' height='70' rx='18' fill='#FFFFFF' stroke='#CBD5E1' stroke-width='1.4'/></g>
+<text x='670' y='136' text-anchor='middle' font-size='13.5' font-weight='700' fill='#1F2937'>CLOSED</text>
+<text x='670' y='155' text-anchor='middle' font-size='10' fill='#8A94A3'>마감 · 참여 불가</text>
+<g filter='url(#sh)'><rect x='1200' y='105' width='200' height='70' rx='18' fill='#ECFDF5' stroke='#10B981' stroke-width='1.4'/></g>
+<text x='1300' y='136' text-anchor='middle' font-size='13.5' font-weight='700' fill='#1F2937'>SETTLED</text>
+<text x='1300' y='155' text-anchor='middle' font-size='10' fill='#8A94A3'>풀 배분 · 수수료 5% 소각</text>
+<g filter='url(#sh)'><rect x='820' y='210' width='200' height='64' rx='18' fill='#FFFBEB' stroke='#F59E0B' stroke-width='1.4'/></g>
+<text x='920' y='238' text-anchor='middle' font-size='13.5' font-weight='700' fill='#1F2937'>DATA_PENDING</text>
+<text x='920' y='257' text-anchor='middle' font-size='10' fill='#8A94A3'>판정 데이터 대기 · 최대 7일</text>
+<g filter='url(#sh)'><rect x='1200' y='220' width='200' height='60' rx='18' fill='#FFF7ED' stroke='#F97316' stroke-width='1.4'/></g>
+<text x='1300' y='246' text-anchor='middle' font-size='13.5' font-weight='700' fill='#1F2937'>VOIDED</text>
+<text x='1300' y='265' text-anchor='middle' font-size='10' fill='#8A94A3'>무효 · 참여 Point 전액 환불</text>
+<rect x='110' y='266' width='320' height='48' rx='8' fill='#FAFBFC' stroke='#C5CDD8' stroke-dasharray='4 4'/><text x='124' y='286' font-size='10' fill='#6B7280'>정산 후 24시간 이내 오류 발견 시</text><text x='124' y='302' font-size='10' fill='#6B7280'>지급 Point 회수 후 재정산 (24시간 초과 시 변경 불가)</text>
+
+<!-- ===== PREDICTION ===== -->
+<rect x='40' y='370' width='1400' height='280' rx='12' fill='none' stroke='#C5CDD8' stroke-width='1.2' stroke-dasharray='6 5'/>
+<text x='62' y='402' font-size='12' font-weight='700' fill='#8A94A3' letter-spacing='1.5'>MARKET 예측 참여 · 상태 흐름</text>
+
+<g fill='none' stroke='#7C8698' stroke-width='1.8'>
+  <path d='M96,470 L106,470' marker-end='url(#ah)'/>
+  <path d='M280,470 L396,470' marker-end='url(#ah)'/>
+  <path d='M600,470 L716,470' marker-end='url(#ah)'/>
+  <path d='M195,505 L195,575 L396,575' marker-end='url(#ah)'/>
+  <path d='M560,509 L560,528 L680,528 L680,575 L716,575' marker-end='url(#ah)'/>
+</g>
+<g><rect x='288' y='463' width='100' height='14' fill='#fff'/><text x='338' y='474' text-anchor='middle' font-size='10' font-weight='600' fill='#6B7280'>Point 차감 성공</text></g>
+<g><rect x='620' y='463' width='76' height='14' fill='#fff'/><text x='658' y='474' text-anchor='middle' font-size='10' font-weight='600' fill='#6B7280'>SETTLED 정산</text></g>
+<g><rect x='240' y='568' width='60' height='14' fill='#fff'/><text x='270' y='579' text-anchor='middle' font-size='10' font-weight='600' fill='#6B7280'>차감 실패</text></g>
+<g><rect x='586' y='521' width='58' height='14' fill='#fff'/><text x='615' y='532' text-anchor='middle' font-size='10' font-weight='600' fill='#6B7280'>무효 처리</text></g>
+<circle cx='90' cy='470' r='6' fill='#475569'/>
+<g filter='url(#sh)'><rect x='110' y='435' width='170' height='70' rx='18' fill='#FFFFFF' stroke='#CBD5E1' stroke-width='1.4'/></g>
+<text x='195' y='466' text-anchor='middle' font-size='13.5' font-weight='700' fill='#1F2937'>PENDING</text>
+<text x='195' y='485' text-anchor='middle' font-size='10' fill='#8A94A3'>참여 기록 생성</text>
+<g filter='url(#sh)'><rect x='400' y='435' width='200' height='70' rx='18' fill='#EFF6FF' stroke='#3B82F6' stroke-width='1.4'/></g>
+<text x='500' y='466' text-anchor='middle' font-size='13.5' font-weight='700' fill='#1F2937'>CONFIRMED</text>
+<text x='500' y='485' text-anchor='middle' font-size='10' fill='#8A94A3'>참여 확정 · 정산 대상</text>
+<g filter='url(#sh)'><rect x='720' y='435' width='190' height='70' rx='18' fill='#ECFDF5' stroke='#10B981' stroke-width='1.4'/></g>
+<text x='815' y='466' text-anchor='middle' font-size='13.5' font-weight='700' fill='#1F2937'>정산 지급</text>
+<text x='815' y='485' text-anchor='middle' font-size='10' fill='#8A94A3'>본인 참여 × 최종 정산 비율</text>
+<g filter='url(#sh)'><rect x='400' y='545' width='200' height='60' rx='18' fill='#FEF2F2' stroke='#EF4444' stroke-width='1.4'/></g>
+<text x='500' y='571' text-anchor='middle' font-size='13.5' font-weight='700' fill='#1F2937'>FAILED</text>
+<text x='500' y='590' text-anchor='middle' font-size='10' fill='#8A94A3'>잔액 부족 · 마감 · 중복 참여</text>
+<g filter='url(#sh)'><rect x='720' y='545' width='190' height='60' rx='18' fill='#FFF7ED' stroke='#F97316' stroke-width='1.4'/></g>
+<text x='815' y='571' text-anchor='middle' font-size='13.5' font-weight='700' fill='#1F2937'>환불</text>
+<text x='815' y='590' text-anchor='middle' font-size='10' fill='#8A94A3'>Market 무효 시 전액 반환</text>
+<rect x='1020' y='435' width='340' height='70' rx='8' fill='#FAFBFC' stroke='#C5CDD8' stroke-dasharray='4 4'/><text x='1034' y='455' font-size='10' fill='#6B7280'>정산 대상에는 CONFIRMED 상태의 예측 참여 기록만 포함</text><text x='1034' y='471' font-size='10' fill='#6B7280'>settlementId 멱등성 키로 중복 정산 방지</text><text x='1034' y='487' font-size='10' fill='#6B7280'>소수점 셋째 자리 이하 버림 · 잔여 Point 소각</text>
+</svg>
