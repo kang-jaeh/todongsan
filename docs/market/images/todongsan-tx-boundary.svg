@@ -1,0 +1,103 @@
+<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1560 880' font-family="Inter, 'Segoe UI', 'Noto Sans CJK KR', 'Malgun Gothic', sans-serif">
+<defs>
+  <marker id='ah' markerWidth='9' markerHeight='9' refX='7.5' refY='4' orient='auto' markerUnits='userSpaceOnUse'><path d='M0,0 L8,4 L0,8 Z' fill='#7C8698'/></marker>
+  <filter id='sh' x='-20%' y='-20%' width='140%' height='140%'><feDropShadow dx='0' dy='1.5' stdDeviation='2' flood-color='#101828' flood-opacity='0.08'/></filter>
+</defs>
+<rect width='1560' height='880' fill='#FFFFFF'/>
+
+<!-- ================= LEFT : 금지 흐름 ================= -->
+<rect x='60' y='60' width='640' height='780' rx='12' fill='#FFFBFB' stroke='#EF4444' stroke-width='1.2' stroke-dasharray='6 5'/>
+<circle cx='90' cy='95' r='5' fill='#EF4444'/>
+<text x='104' y='100' font-size='13' font-weight='700' fill='#B91C1C'>기존 흐름 · 단일 트랜잭션 안에서 외부 HTTP 호출</text>
+
+<g fill='none' stroke='#7C8698' stroke-width='1.8'>
+  <path d='M300,244 L300,286' marker-end='url(#ah)'/>
+  <path d='M300,364 L300,406' marker-end='url(#ah)'/>
+  <path d='M300,484 L300,526' marker-end='url(#ah)'/>
+</g>
+<g filter='url(#sh)'><rect x='110' y='170' width='380' height='70' rx='12' fill='#FFFFFF' stroke='#CBD5E1' stroke-width='1.4'/></g>
+<text x='300' y='201' text-anchor='middle' font-size='13' font-weight='700' fill='#1F2937'>트랜잭션 시작 · Market row 락</text>
+<text x='300' y='220' text-anchor='middle' font-size='10' fill='#8A94A3'>SELECT ... FOR UPDATE</text>
+<g filter='url(#sh)'><rect x='110' y='290' width='380' height='70' rx='12' fill='#FEF2F2' stroke='#EF4444' stroke-width='1.4'/></g>
+<text x='300' y='321' text-anchor='middle' font-size='13' font-weight='700' fill='#1F2937'>Member-Point HTTP 호출 · 응답 대기</text>
+<text x='300' y='340' text-anchor='middle' font-size='10' fill='#8A94A3'>외부 서비스 · 지연 시간 예측 불가</text>
+<g filter='url(#sh)'><rect x='110' y='410' width='380' height='70' rx='12' fill='#FFFFFF' stroke='#CBD5E1' stroke-width='1.4'/></g>
+<text x='300' y='441' text-anchor='middle' font-size='13' font-weight='700' fill='#1F2937'>가격 확정 · pool/가격 재계산</text>
+<text x='300' y='460' text-anchor='middle' font-size='10' fill='#8A94A3'>priceSnapshot · Prediction 저장</text>
+<g filter='url(#sh)'><rect x='110' y='530' width='380' height='70' rx='12' fill='#FFFFFF' stroke='#CBD5E1' stroke-width='1.4'/></g>
+<text x='300' y='561' text-anchor='middle' font-size='13' font-weight='700' fill='#1F2937'>커밋</text>
+<text x='300' y='580' text-anchor='middle' font-size='10' fill='#8A94A3'>이 시점에야 락 · 커넥션 해제</text>
+
+<!-- lock bar -->
+<rect x='545' y='170' width='22' height='430' rx='4' fill='#FEE2E2' stroke='#EF4444' stroke-width='1'/>
+<rect x='545' y='290' width='22' height='70' fill='#EF4444' opacity='0.38'/>
+<text x='580' y='378' font-size='11' font-weight='700' fill='#B91C1C'>락 · DB 커넥션 점유</text>
+<text x='580' y='396' font-size='10.5' fill='#B91C1C'>HTTP 응답이 올 때까지</text>
+
+<rect x='100' y='655' width='480' height='92' rx='8' fill='#FEF2F2' stroke='#FCA5A5' stroke-dasharray='4 4'/>
+<text x='118' y='685' font-size='11' fill='#B91C1C' font-weight='600'>외부 응답 지연 = 락 · 커넥션 점유 시간 증가</text>
+<text x='118' y='707' font-size='11' fill='#B91C1C'>트래픽 급증 시 커넥션 풀 고갈 → lock wait 증가 → timeout 전파</text>
+<text x='118' y='729' font-size='11' fill='#B91C1C'>장애가 Member-Point에서 Market DB 전체로 확산</text>
+
+<!-- ================= RIGHT : 권장 흐름 ================= -->
+<rect x='760' y='60' width='740' height='780' rx='12' fill='#F7FEFB' stroke='#10B981' stroke-width='1.2' stroke-dasharray='6 5'/>
+<circle cx='790' cy='95' r='5' fill='#10B981'/>
+<text x='804' y='100' font-size='13' font-weight='700' fill='#047857'>개선 흐름 · 트랜잭션 경계 분리 (A → 외부 호출 → B)</text>
+
+<!-- lock bars (left of containers) -->
+<rect x='780' y='150' width='20' height='140' rx='4' fill='#D1FAE5' stroke='#10B981' stroke-width='1'/>
+<text x='790' y='140' text-anchor='middle' font-size='10' font-weight='600' fill='#047857'>락 점유</text>
+<rect x='780' y='470' width='20' height='260' rx='4' fill='#D1FAE5' stroke='#10B981' stroke-width='1'/>
+<text x='790' y='462' text-anchor='middle' font-size='10' font-weight='600' fill='#047857'>락 점유</text>
+<text x='790' y='384' text-anchor='middle' font-size='10' font-weight='600' fill='#6B7280'>락 미점유</text>
+
+<!-- TX A -->
+<rect x='830' y='150' width='400' height='140' rx='10' fill='#FBFDFF' stroke='#3B82F6' stroke-width='1.3'/>
+<text x='846' y='176' font-size='12' font-weight='700' fill='#3B82F6'>Transaction A — 선저장 · 짧은 커밋</text>
+<g filter='url(#sh)'><rect x='860' y='196' width='340' height='70' rx='12' fill='#FFFFFF' stroke='#CBD5E1' stroke-width='1.4'/></g>
+<text x='1030' y='227' text-anchor='middle' font-size='13' font-weight='700' fill='#1F2937'>Prediction POINT_PENDING 저장</text>
+<text x='1030' y='246' text-anchor='middle' font-size='10' fill='#8A94A3'>ACTIVE·선택지·중복 검증 → 즉시 커밋</text>
+
+<!-- outside zone -->
+<rect x='830' y='330' width='400' height='100' rx='10' fill='#FAFBFC' stroke='#C5CDD8' stroke-width='1.2' stroke-dasharray='5 4'/>
+<text x='846' y='352' font-size='12' font-weight='700' fill='#8A94A3'>트랜잭션 밖 · No Lock</text>
+<g filter='url(#sh)'><rect x='860' y='362' width='340' height='60' rx='12' fill='#FFFFFF' stroke='#CBD5E1' stroke-width='1.4'/></g>
+<text x='1030' y='388' text-anchor='middle' font-size='13' font-weight='700' fill='#1F2937'>Member-Point 포인트 차감 호출</text>
+<text x='1030' y='407' text-anchor='middle' font-size='10' fill='#8A94A3'>Idempotency-Key 멱등 처리 · 커넥션 미점유</text>
+
+<!-- TX B -->
+<rect x='830' y='470' width='400' height='260' rx='10' fill='#FBFDFF' stroke='#3B82F6' stroke-width='1.3'/>
+<text x='846' y='494' font-size='12' font-weight='700' fill='#3B82F6'>Transaction B — 가격 확정 · 짧은 커밋</text>
+<g filter='url(#sh)'><rect x='860' y='506' width='340' height='58' rx='12' fill='#FFFFFF' stroke='#CBD5E1' stroke-width='1.4'/></g>
+<text x='1030' y='531' text-anchor='middle' font-size='13' font-weight='700' fill='#1F2937'>Market → Option 전체 고정 순서 락</text>
+<text x='1030' y='550' text-anchor='middle' font-size='10' fill='#8A94A3'>optionId ASC · 데드락 방지</text>
+<g filter='url(#sh)'><rect x='860' y='576' width='340' height='58' rx='12' fill='#FFFFFF' stroke='#CBD5E1' stroke-width='1.4'/></g>
+<text x='1030' y='601' text-anchor='middle' font-size='13' font-weight='700' fill='#1F2937'>락 시점 가격으로 확정 · 재계산</text>
+<text x='1030' y='620' text-anchor='middle' font-size='10' fill='#8A94A3'>priceSnapshot · contractQuantity · PriceHistory</text>
+<g filter='url(#sh)'><rect x='860' y='646' width='340' height='58' rx='12' fill='#ECFDF5' stroke='#10B981' stroke-width='1.4'/></g>
+<text x='1030' y='671' text-anchor='middle' font-size='13' font-weight='700' fill='#1F2937'>Prediction CONFIRMED → 커밋</text>
+<text x='1030' y='690' text-anchor='middle' font-size='10' fill='#8A94A3'>정산 대상 확정</text>
+
+<!-- flow arrows -->
+<g fill='none' stroke='#7C8698' stroke-width='1.8'>
+  <path d='M1030,294 L1030,326' marker-end='url(#ah)'/>
+  <path d='M1030,434 L1030,466' marker-end='url(#ah)'/>
+  <path d='M1204,392 L1286,392' stroke-dasharray='5 5' marker-end='url(#ah)'/>
+  <path d='M1380,412 L1380,466' stroke-dasharray='5 5' marker-end='url(#ah)'/>
+  <path d='M1286,520 L1234,520' stroke-dasharray='5 5' marker-end='url(#ah)'/>
+</g>
+<g><rect x='1198' y='375' width='90' height='14' fill='#fff'/><text x='1243' y='386' text-anchor='middle' font-size='10' font-weight='600' fill='#6B7280'>타임아웃 · 5xx</text></g>
+<g><rect x='1232' y='503' width='56' height='14' fill='#fff'/><text x='1260' y='514' text-anchor='middle' font-size='10' font-weight='600' fill='#6B7280'>B 재시도</text></g>
+
+<!-- failure branch -->
+<g filter='url(#sh)'><rect x='1290' y='338' width='180' height='74' rx='12' fill='#FFFBEB' stroke='#F59E0B' stroke-width='1.4'/></g>
+<text x='1380' y='371' text-anchor='middle' font-size='13' font-weight='700' fill='#1F2937'>POINT_UNKNOWN</text>
+<text x='1380' y='390' text-anchor='middle' font-size='10' fill='#8A94A3'>차감 성공 여부 불명</text>
+<g filter='url(#sh)'><rect x='1290' y='470' width='180' height='86' rx='12' fill='#FFF7ED' stroke='#F97316' stroke-width='1.4'/></g>
+<text x='1380' y='509' text-anchor='middle' font-size='13' font-weight='700' fill='#1F2937'>Scheduler 대사</text>
+<text x='1380' y='528' text-anchor='middle' font-size='10' fill='#8A94A3'>거래 상태 조회 → 확정 재시도</text>
+
+<rect x='830' y='755' width='600' height='64' rx='8' fill='#ECFDF5' stroke='#6EE7B7' stroke-dasharray='4 4'/>
+<text x='848' y='781' font-size='11' fill='#047857' font-weight='600'>락 점유를 A·B 두 개의 짧은 구간으로 한정 → 외부 지연이 DB로 전파되지 않음</text>
+<text x='848' y='801' font-size='11' fill='#047857'>가격은 차감 성공 후 락 획득 시점의 currentPrice 기준 확정 · 실패 건은 대사로 수렴</text>
+</svg>
