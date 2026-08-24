@@ -84,4 +84,27 @@ public class PointHistory extends BaseEntity {
         this.failReason = failReason;
     }
 
+    /**
+     * PENDING → SUCCEEDED 확정. 잔액 UPDATE 후 확정된 balanceSnapshot을 함께 기록한다.
+     */
+    public void confirm(BigDecimal confirmedBalance) {
+        if (this.status != PointTransactionStatus.PENDING) {
+            throw new IllegalStateException("PENDING 상태에서만 confirm 가능: " + this.status);
+        }
+        this.status = PointTransactionStatus.SUCCEEDED;
+        this.balanceSnapshot = confirmedBalance;
+    }
+
+    /**
+     * PENDING → FAILED 확정. 잔액 변경 없이 현재 잔액을 snapshot으로 기록한다.
+     */
+    public void fail(BigDecimal currentBalance, String failReason) {
+        if (this.status != PointTransactionStatus.PENDING) {
+            throw new IllegalStateException("PENDING 상태에서만 fail 가능: " + this.status);
+        }
+        this.status = PointTransactionStatus.FAILED;
+        this.balanceSnapshot = currentBalance;
+        this.failReason = failReason;
+    }
+
 }
