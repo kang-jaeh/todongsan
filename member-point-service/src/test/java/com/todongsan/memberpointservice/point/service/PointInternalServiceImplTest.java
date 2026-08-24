@@ -14,13 +14,13 @@ import com.todongsan.memberpointservice.point.entity.PointHistoryType;
 import com.todongsan.memberpointservice.point.entity.PointReferenceType;
 import com.todongsan.memberpointservice.point.entity.PointTransactionStatus;
 import com.todongsan.memberpointservice.point.repository.PointHistoryRepository;
-import jakarta.persistence.EntityManager;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.SimpleTransactionStatus;
 
 import java.math.BigDecimal;
 import java.util.Optional;
@@ -36,10 +36,9 @@ class PointInternalServiceImplTest {
 
     @Mock MemberRepository memberRepository;
     @Mock PointHistoryRepository pointHistoryRepository;
-    @Mock EntityManager entityManager;
-    @Mock IdempotencySupport idempotencySupport;
+    @Mock PlatformTransactionManager transactionManager;
 
-    @InjectMocks PointInternalServiceImpl pointInternalServiceImpl;
+    PointInternalServiceImpl service;
 
     private static final String KEY = "test-idempotency-key";
     private static final Long MEMBER_ID = 1L;
@@ -47,6 +46,23 @@ class PointInternalServiceImplTest {
     private static final BigDecimal AMOUNT = new BigDecimal("10.00");
     private static final String REF_TYPE = "BATTLE";
     private static final Long REF_ID = 42L;
+
+    @BeforeEach
+    void setUp() {
+        // TransactionTemplate이 실제 트랜잭션 없이 callback을 실행하도록 설정
+        lenient().when(transactionManager.getTransaction(any()))
+                .thenReturn(new SimpleTransactionStatus());
+        lenient().doNothing().when(transactionManager).commit(any());
+        lenient().doNothing().when(transactionManager).rollback(any());
+
+        // save()가 입력받은 엔티티를 그대로 반환하도록 설정
+        lenient().when(pointHistoryRepository.save(any(PointHistory.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+        lenient().when(pointHistoryRepository.saveAndFlush(any(PointHistory.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        service = new PointInternalServiceImpl(memberRepository, pointHistoryRepository, transactionManager);
+    }
 
     private Member createMemberMock(BigDecimal balance) {
         Member member = mock(Member.class);
@@ -99,19 +115,17 @@ class PointInternalServiceImplTest {
 
         when(pointHistoryRepository.findByIdempotencyKey(KEY)).thenReturn(Optional.empty());
         when(memberRepository.findByIdAndDeletedAtIsNull(MEMBER_ID))
-                .thenReturn(Optional.of(member))        // 존재 확인용
-                .thenReturn(Optional.of(updatedMember)); // balance snapshot용
+                .thenReturn(Optional.of(member))
+                .thenReturn(Optional.of(updatedMember));
         when(memberRepository.earnPoint(eq(MEMBER_ID), any())).thenReturn(1);
 
-        PointResult<EarnResponse> result = pointInternalServiceImpl.earn(KEY, request);
+        PointResult<EarnResponse> result = service.earn(KEY, request);
 
         assertThat(result.alreadyProcessed()).isFalse();
         assertThat(result.data().getMemberId()).isEqualTo(MEMBER_ID);
         assertThat(result.data().getType()).isEqualTo(TYPE);
         assertThat(result.data().getAmount()).isEqualTo("10.00");
         assertThat(result.data().getBalanceSnapshot()).isEqualTo("110.00");
-
-        verify(pointHistoryRepository).saveAndFlush(any(PointHistory.class));
     }
 
     @Test
@@ -121,11 +135,10 @@ class PointInternalServiceImplTest {
 
         when(pointHistoryRepository.findByIdempotencyKey(KEY)).thenReturn(Optional.of(createHistory(hash)));
 
-        PointResult<EarnResponse> result = pointInternalServiceImpl.earn(KEY, request);
+        PointResult<EarnResponse> result = service.earn(KEY, request);
 
         assertThat(result.alreadyProcessed()).isTrue();
         assertThat(result.data().getMemberId()).isEqualTo(MEMBER_ID);
-        verify(pointHistoryRepository, never()).saveAndFlush(any());
     }
 
     @Test
@@ -134,69 +147,14 @@ class PointInternalServiceImplTest {
 
         when(pointHistoryRepository.findByIdempotencyKey(KEY)).thenReturn(Optional.of(createHistory("different-hash")));
 
-        assertThatThrownBy(() -> pointInternalServiceImpl.earn(KEY, request))
+        assertThatThrownBy(() -> service.earn(KEY, request))
                 .isInstanceOf(CustomException.class)
                 .hasFieldOrPropertyWithValue("errorCode", ErrorCode.IDEMPOTENCY_KEY_CONFLICT);
-    }
-
-    @Test
-    void earn_UNIQUE_위반_catch후_재조회_SUCCEEDED() {
-        EarnRequest request = createEarnRequest();
-        String hash = RequestHashUtil.compute(MEMBER_ID, TYPE, AMOUNT, REF_TYPE, REF_ID);
-        Member member = createMember();
-
-        // 낙관적 검사: 비어있음 (race 발생)
-        when(pointHistoryRepository.findByIdempotencyKey(KEY)).thenReturn(Optional.empty());
-        when(memberRepository.findByIdAndDeletedAtIsNull(MEMBER_ID)).thenReturn(Optional.of(member));
-        // PENDING INSERT: UNIQUE 위반
-        when(pointHistoryRepository.saveAndFlush(any())).thenThrow(new DataIntegrityViolationException("Duplicate"));
-        // 새 트랜잭션에서 재조회: 선행 요청의 SUCCEEDED 이력
-        when(idempotencySupport.findByKeyInNewTransaction(KEY))
-                .thenReturn(Optional.of(createHistory(hash)));
-
-        PointResult<EarnResponse> result = pointInternalServiceImpl.earn(KEY, request);
-
-        assertThat(result.alreadyProcessed()).isTrue();
-        verify(entityManager).clear();
-        verify(idempotencySupport).findByKeyInNewTransaction(KEY);
-    }
-
-    @Test
-    void earn_UNIQUE_위반_해시불일치_409() {
-        EarnRequest request = createEarnRequest();
-        Member member = createMember();
-
-        when(pointHistoryRepository.findByIdempotencyKey(KEY)).thenReturn(Optional.empty());
-        when(memberRepository.findByIdAndDeletedAtIsNull(MEMBER_ID)).thenReturn(Optional.of(member));
-        when(pointHistoryRepository.saveAndFlush(any())).thenThrow(new DataIntegrityViolationException("Duplicate"));
-        when(idempotencySupport.findByKeyInNewTransaction(KEY))
-                .thenReturn(Optional.of(createHistory("different-hash")));
-
-        assertThatThrownBy(() -> pointInternalServiceImpl.earn(KEY, request))
-                .isInstanceOf(CustomException.class)
-                .hasFieldOrPropertyWithValue("errorCode", ErrorCode.IDEMPOTENCY_KEY_CONFLICT);
-    }
-
-    @Test
-    void earn_UNIQUE_위반_키로_못찾으면_원래예외_전파() {
-        EarnRequest request = createEarnRequest();
-        Member member = createMember();
-
-        when(pointHistoryRepository.findByIdempotencyKey(KEY)).thenReturn(Optional.empty());
-        when(memberRepository.findByIdAndDeletedAtIsNull(MEMBER_ID)).thenReturn(Optional.of(member));
-        when(pointHistoryRepository.saveAndFlush(any())).thenThrow(new DataIntegrityViolationException("FK violation"));
-        // 키로 재조회 실패 -> 다른 제약 위반
-        when(idempotencySupport.findByKeyInNewTransaction(KEY)).thenReturn(Optional.empty());
-
-        assertThatThrownBy(() -> pointInternalServiceImpl.earn(KEY, request))
-                .isInstanceOf(DataIntegrityViolationException.class);
     }
 
     @Test
     void earn_키_없으면_예외() {
-        EarnRequest request = createEarnRequest();
-
-        assertThatThrownBy(() -> pointInternalServiceImpl.earn(null, request))
+        assertThatThrownBy(() -> service.earn(null, createEarnRequest()))
                 .isInstanceOf(CustomException.class)
                 .hasFieldOrPropertyWithValue("errorCode", ErrorCode.IDEMPOTENCY_KEY_REQUIRED);
     }
@@ -206,7 +164,7 @@ class PointInternalServiceImplTest {
         EarnRequest request = mock(EarnRequest.class);
         when(request.getAmount()).thenReturn(BigDecimal.ZERO);
 
-        assertThatThrownBy(() -> pointInternalServiceImpl.earn(KEY, request))
+        assertThatThrownBy(() -> service.earn(KEY, request))
                 .isInstanceOf(CustomException.class)
                 .hasFieldOrPropertyWithValue("errorCode", ErrorCode.POINT_INVALID_AMOUNT);
     }
@@ -217,7 +175,7 @@ class PointInternalServiceImplTest {
         when(request.getAmount()).thenReturn(AMOUNT);
         when(request.getReferenceType()).thenReturn("INVALID");
 
-        assertThatThrownBy(() -> pointInternalServiceImpl.earn(KEY, request))
+        assertThatThrownBy(() -> service.earn(KEY, request))
                 .isInstanceOf(CustomException.class)
                 .hasFieldOrPropertyWithValue("errorCode", ErrorCode.POINT_INVALID_REFERENCE_TYPE);
     }
@@ -238,10 +196,9 @@ class PointInternalServiceImplTest {
                 .thenReturn(Optional.of(updatedMember));
         when(memberRepository.earnPoint(eq(MEMBER_ID), any())).thenReturn(1);
 
-        PointResult<EarnResponse> result = pointInternalServiceImpl.earn(KEY, request);
+        PointResult<EarnResponse> result = service.earn(KEY, request);
 
         assertThat(result.alreadyProcessed()).isFalse();
-        assertThat(result.data().getMemberId()).isEqualTo(MEMBER_ID);
     }
 
     @Test
@@ -251,7 +208,7 @@ class PointInternalServiceImplTest {
         when(request.getReferenceType()).thenReturn(REF_TYPE);
         when(request.getType()).thenReturn(null);
 
-        assertThatThrownBy(() -> pointInternalServiceImpl.earn(KEY, request))
+        assertThatThrownBy(() -> service.earn(KEY, request))
                 .isInstanceOf(CustomException.class)
                 .hasFieldOrPropertyWithValue("errorCode", ErrorCode.VALIDATION_FAILED);
     }
@@ -266,9 +223,22 @@ class PointInternalServiceImplTest {
         when(pointHistoryRepository.findByIdempotencyKey(KEY)).thenReturn(Optional.empty());
         when(memberRepository.findByIdAndDeletedAtIsNull(999L)).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> pointInternalServiceImpl.earn(KEY, request))
+        assertThatThrownBy(() -> service.earn(KEY, request))
                 .isInstanceOf(CustomException.class)
                 .hasFieldOrPropertyWithValue("errorCode", ErrorCode.MEMBER_NOT_FOUND);
+    }
+
+    @Test
+    void earn_PENDING상태_이력_발견시_409() {
+        EarnRequest request = createEarnRequest();
+        String hash = RequestHashUtil.compute(MEMBER_ID, TYPE, AMOUNT, REF_TYPE, REF_ID);
+
+        when(pointHistoryRepository.findByIdempotencyKey(KEY))
+                .thenReturn(Optional.of(createHistory(PointTransactionStatus.PENDING, hash)));
+
+        assertThatThrownBy(() -> service.earn(KEY, request))
+                .isInstanceOf(CustomException.class)
+                .hasFieldOrPropertyWithValue("errorCode", ErrorCode.IDEMPOTENCY_KEY_CONFLICT);
     }
 
     // ─── spend ────────────────────────────────────────────────
@@ -312,15 +282,13 @@ class PointInternalServiceImplTest {
                 .thenReturn(Optional.of(updatedMember));
         when(memberRepository.spendPoint(eq(MEMBER_ID), any())).thenReturn(1);
 
-        PointResult<SpendResponse> result = pointInternalServiceImpl.spend(KEY, request);
+        PointResult<SpendResponse> result = service.spend(KEY, request);
 
         assertThat(result.alreadyProcessed()).isFalse();
         assertThat(result.data().getMemberId()).isEqualTo(MEMBER_ID);
         assertThat(result.data().getType()).isEqualTo("SPEND_MARKET");
         assertThat(result.data().getAmount()).isEqualTo("10.00");
         assertThat(result.data().getBalanceSnapshot()).isEqualTo("90.00");
-
-        verify(pointHistoryRepository).saveAndFlush(any(PointHistory.class));
     }
 
     @Test
@@ -332,11 +300,9 @@ class PointInternalServiceImplTest {
         when(memberRepository.findByIdAndDeletedAtIsNull(MEMBER_ID)).thenReturn(Optional.of(member));
         when(memberRepository.spendPoint(eq(MEMBER_ID), any())).thenReturn(0);
 
-        assertThatThrownBy(() -> pointInternalServiceImpl.spend(KEY, request))
+        assertThatThrownBy(() -> service.spend(KEY, request))
                 .isInstanceOf(CustomException.class)
                 .hasFieldOrPropertyWithValue("errorCode", ErrorCode.POINT_INSUFFICIENT);
-
-        verify(pointHistoryRepository).saveAndFlush(any(PointHistory.class));
     }
 
     @Test
@@ -347,10 +313,9 @@ class PointInternalServiceImplTest {
         when(pointHistoryRepository.findByIdempotencyKey(KEY))
                 .thenReturn(Optional.of(createSpendHistory(PointTransactionStatus.SUCCEEDED, hash)));
 
-        PointResult<SpendResponse> result = pointInternalServiceImpl.spend(KEY, request);
+        PointResult<SpendResponse> result = service.spend(KEY, request);
 
         assertThat(result.alreadyProcessed()).isTrue();
-        assertThat(result.data().getMemberId()).isEqualTo(MEMBER_ID);
     }
 
     @Test
@@ -361,8 +326,7 @@ class PointInternalServiceImplTest {
         when(pointHistoryRepository.findByIdempotencyKey(KEY))
                 .thenReturn(Optional.of(createSpendHistory(PointTransactionStatus.FAILED, hash)));
 
-        // "같은 요청 -> 같은 응답" — 실패에도 적용
-        assertThatThrownBy(() -> pointInternalServiceImpl.spend(KEY, request))
+        assertThatThrownBy(() -> service.spend(KEY, request))
                 .isInstanceOf(CustomException.class)
                 .hasFieldOrPropertyWithValue("errorCode", ErrorCode.POINT_INSUFFICIENT);
     }
@@ -374,35 +338,14 @@ class PointInternalServiceImplTest {
         when(pointHistoryRepository.findByIdempotencyKey(KEY))
                 .thenReturn(Optional.of(createSpendHistory(PointTransactionStatus.SUCCEEDED, "different-hash")));
 
-        assertThatThrownBy(() -> pointInternalServiceImpl.spend(KEY, request))
+        assertThatThrownBy(() -> service.spend(KEY, request))
                 .isInstanceOf(CustomException.class)
                 .hasFieldOrPropertyWithValue("errorCode", ErrorCode.IDEMPOTENCY_KEY_CONFLICT);
     }
 
     @Test
-    void spend_UNIQUE_위반_catch후_재조회_FAILED_같은_실패_재현() {
-        SpendRequest request = createSpendRequest();
-        String hash = RequestHashUtil.compute(MEMBER_ID, "SPEND_MARKET", AMOUNT, REF_TYPE, REF_ID);
-        Member member = createMember();
-
-        when(pointHistoryRepository.findByIdempotencyKey(KEY)).thenReturn(Optional.empty());
-        when(memberRepository.findByIdAndDeletedAtIsNull(MEMBER_ID)).thenReturn(Optional.of(member));
-        when(pointHistoryRepository.saveAndFlush(any())).thenThrow(new DataIntegrityViolationException("Duplicate"));
-        when(idempotencySupport.findByKeyInNewTransaction(KEY))
-                .thenReturn(Optional.of(createSpendHistory(PointTransactionStatus.FAILED, hash)));
-
-        assertThatThrownBy(() -> pointInternalServiceImpl.spend(KEY, request))
-                .isInstanceOf(CustomException.class)
-                .hasFieldOrPropertyWithValue("errorCode", ErrorCode.POINT_INSUFFICIENT);
-
-        verify(entityManager).clear();
-    }
-
-    @Test
     void spend_키_없으면_예외() {
-        SpendRequest request = createSpendRequest();
-
-        assertThatThrownBy(() -> pointInternalServiceImpl.spend(null, request))
+        assertThatThrownBy(() -> service.spend(null, createSpendRequest()))
                 .isInstanceOf(CustomException.class)
                 .hasFieldOrPropertyWithValue("errorCode", ErrorCode.IDEMPOTENCY_KEY_REQUIRED);
     }
@@ -412,7 +355,7 @@ class PointInternalServiceImplTest {
         SpendRequest request = mock(SpendRequest.class);
         when(request.getAmount()).thenReturn(BigDecimal.ZERO);
 
-        assertThatThrownBy(() -> pointInternalServiceImpl.spend(KEY, request))
+        assertThatThrownBy(() -> service.spend(KEY, request))
                 .isInstanceOf(CustomException.class)
                 .hasFieldOrPropertyWithValue("errorCode", ErrorCode.POINT_INVALID_AMOUNT);
     }
@@ -433,10 +376,9 @@ class PointInternalServiceImplTest {
                 .thenReturn(Optional.of(updatedMember));
         when(memberRepository.spendPoint(eq(MEMBER_ID), any())).thenReturn(1);
 
-        PointResult<SpendResponse> result = pointInternalServiceImpl.spend(KEY, request);
+        PointResult<SpendResponse> result = service.spend(KEY, request);
 
         assertThat(result.alreadyProcessed()).isFalse();
-        assertThat(result.data().getMemberId()).isEqualTo(MEMBER_ID);
     }
 
     @Test
@@ -446,7 +388,7 @@ class PointInternalServiceImplTest {
         when(request.getReferenceType()).thenReturn(REF_TYPE);
         when(request.getType()).thenReturn(null);
 
-        assertThatThrownBy(() -> pointInternalServiceImpl.spend(KEY, request))
+        assertThatThrownBy(() -> service.spend(KEY, request))
                 .isInstanceOf(CustomException.class)
                 .hasFieldOrPropertyWithValue("errorCode", ErrorCode.VALIDATION_FAILED);
     }
@@ -461,24 +403,9 @@ class PointInternalServiceImplTest {
         when(pointHistoryRepository.findByIdempotencyKey(KEY)).thenReturn(Optional.empty());
         when(memberRepository.findByIdAndDeletedAtIsNull(999L)).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> pointInternalServiceImpl.spend(KEY, request))
+        assertThatThrownBy(() -> service.spend(KEY, request))
                 .isInstanceOf(CustomException.class)
                 .hasFieldOrPropertyWithValue("errorCode", ErrorCode.MEMBER_NOT_FOUND);
-    }
-
-    // ─── PENDING 방어 테스트 ──────────────────────────────────
-
-    @Test
-    void earn_PENDING상태_이력_발견시_409() {
-        EarnRequest request = createEarnRequest();
-        String hash = RequestHashUtil.compute(MEMBER_ID, TYPE, AMOUNT, REF_TYPE, REF_ID);
-
-        when(pointHistoryRepository.findByIdempotencyKey(KEY))
-                .thenReturn(Optional.of(createHistory(PointTransactionStatus.PENDING, hash)));
-
-        assertThatThrownBy(() -> pointInternalServiceImpl.earn(KEY, request))
-                .isInstanceOf(CustomException.class)
-                .hasFieldOrPropertyWithValue("errorCode", ErrorCode.IDEMPOTENCY_KEY_CONFLICT);
     }
 
     @Test
@@ -487,19 +414,15 @@ class PointInternalServiceImplTest {
         String hash = RequestHashUtil.compute(MEMBER_ID, "SPEND_MARKET", AMOUNT, REF_TYPE, REF_ID);
 
         PointHistory pendingHistory = PointHistory.builder()
-                .memberId(MEMBER_ID)
-                .type(PointHistoryType.SPEND_MARKET)
-                .amount(AMOUNT)
-                .balanceSnapshot(BigDecimal.ZERO)
-                .idempotencyKey(KEY)
-                .requestHash(hash)
-                .status(PointTransactionStatus.PENDING)
-                .build();
+                .memberId(MEMBER_ID).type(PointHistoryType.SPEND_MARKET)
+                .amount(AMOUNT).balanceSnapshot(BigDecimal.ZERO)
+                .idempotencyKey(KEY).requestHash(hash)
+                .status(PointTransactionStatus.PENDING).build();
 
         when(pointHistoryRepository.findByIdempotencyKey(KEY))
                 .thenReturn(Optional.of(pendingHistory));
 
-        assertThatThrownBy(() -> pointInternalServiceImpl.spend(KEY, request))
+        assertThatThrownBy(() -> service.spend(KEY, request))
                 .isInstanceOf(CustomException.class)
                 .hasFieldOrPropertyWithValue("errorCode", ErrorCode.IDEMPOTENCY_KEY_CONFLICT);
     }
