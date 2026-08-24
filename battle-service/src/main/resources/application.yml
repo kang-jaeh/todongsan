@@ -28,6 +28,20 @@ external:
     url: ${INSIGHT_SERVICE_URL:http://localhost:8083}
   internal-auth-token: ${INTERNAL_AUTH_TOKEN}
 
+# ── Kafka ──────────────────────────────────────────────────
+# 프로덕션 기준: bootstrap-servers는 브로커 3대 이상 나열
+spring.kafka:
+  bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+  producer:
+    acks: all                        # 모든 ISR 복제본이 확인해야 발행 성공
+    # enable.idempotence: true       # acks=all이면 Spring Kafka가 자동 활성화
+    retries: 3
+    properties:
+      max.in.flight.requests.per.connection: 5  # 멱등 프로듀서 최대 허용값
+      # 프로덕션: replication.factor=3, min.insync.replicas=2
+    key-serializer: org.apache.kafka.common.serialization.StringSerializer
+    value-serializer: org.apache.kafka.common.serialization.StringSerializer
+
 logging:
   level:
     com.todongsan: DEBUG

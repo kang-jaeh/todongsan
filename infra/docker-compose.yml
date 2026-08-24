@@ -22,8 +22,67 @@ services:
     networks:
       - todongsan-network
 
+  # ── Kafka (KRaft, 단일 브로커) ──────────────────────────────
+  # 프로덕션 기준: replication.factor=3, min.insync.replicas=2, 브로커 3대 이상
+  # 로컬은 1대로 단순화하되 프로덕션 설정을 주석으로 명시한다.
+  kafka:
+    image: apache/kafka:3.8.0
+    container_name: todongsan-kafka
+    restart: unless-stopped
+
+    ports:
+      - "127.0.0.1:9092:9092"
+
+    environment:
+      # KRaft 모드 (ZooKeeper 없음)
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+
+      # 리스너: 외부(HOST)=localhost:9092, 내부(DOCKER)=kafka:29092, 컨트롤러=kafka:29093
+      KAFKA_LISTENERS: HOST://0.0.0.0:9092,DOCKER://0.0.0.0:29092,CONTROLLER://0.0.0.0:29093
+      KAFKA_ADVERTISED_LISTENERS: HOST://localhost:9092,DOCKER://kafka:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: HOST:PLAINTEXT,DOCKER:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: DOCKER
+
+      # 토픽 기본 설정 (로컬: 1파티션/RF=1, 프로덕션: 파티션 3+, RF=3, min.insync.replicas=2)
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_NUM_PARTITIONS: 1
+      KAFKA_LOG_RETENTION_HOURS: 168  # 7일 — 예상 최대 컨슈머 다운타임보다 길게 설정
+
+      # 클러스터 ID (KRaft 필수)
+      CLUSTER_ID: todongsan-kafka-cluster-001
+
+    volumes:
+      - todongsan_kafka_data:/var/lib/kafka/data
+
+    networks:
+      - todongsan-network
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: todongsan-kafka-ui
+    restart: unless-stopped
+
+    ports:
+      - "127.0.0.1:8989:8080"
+
+    environment:
+      KAFKA_CLUSTERS_0_NAME: todongsan-local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+
+    depends_on:
+      - kafka
+
+    networks:
+      - todongsan-network
+
 volumes:
   todongsan_mysql_data:
+  todongsan_kafka_data:
 
 networks:
   todongsan-network:

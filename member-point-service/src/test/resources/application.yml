@@ -21,3 +21,12 @@ jwt:
 
 kakao:
   api-base-url: http://localhost:9999
+
+# 단위 테스트에서 Kafka 자동 연결 비활성화
+spring.kafka:
+  bootstrap-servers: localhost:9092
+  consumer:
+    auto-offset-reset: earliest
+  listener:
+    ack-mode: manual
+spring.autoconfigure.exclude: org.springframework.boot.autoconfigure.kafka.KafkaAutoConfiguration
