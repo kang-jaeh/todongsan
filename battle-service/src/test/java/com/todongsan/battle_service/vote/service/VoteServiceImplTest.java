@@ -2,10 +2,9 @@ package com.todongsan.battle_service.vote.service;
 
 import com.todongsan.battle_service.battle.entity.Battle;
 import com.todongsan.battle_service.battle.repository.BattleRepository;
-import com.todongsan.battle_service.client.MemberPointClient;
 import com.todongsan.battle_service.global.exception.CustomException;
 import com.todongsan.battle_service.global.exception.ErrorCode;
-import com.todongsan.battle_service.retry.repository.PointRewardRetryQueueRepository;
+import com.todongsan.battle_service.outbox.service.OutboxEventCreator;
 import com.todongsan.battle_service.vote.dto.request.VoteRequest;
 import com.todongsan.battle_service.vote.dto.response.CrossAnalysisResponse;
 import com.todongsan.battle_service.vote.dto.response.MyVoteBattleResponse;
@@ -49,8 +48,7 @@ class VoteServiceImplTest {
 
     @Mock private BattleRepository battleRepository;
     @Mock private BattleVoteRepository battleVoteRepository;
-    @Mock private MemberPointClient memberPointClient;
-    @Mock private PointRewardRetryQueueRepository retryQueueRepository;
+    @Mock private OutboxEventCreator outboxEventCreator;
     @Mock private TransactionTemplate txTemplate;
 
     @InjectMocks
@@ -76,7 +74,7 @@ class VoteServiceImplTest {
 
         assertThat(response.getSelectedOption()).isEqualTo("A");
         verify(battleRepository).incrementOptionA(1L);
-        verify(memberPointClient).earnPoint(any());
+        verify(outboxEventCreator).createRewardEvent(any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -92,36 +90,7 @@ class VoteServiceImplTest {
         verify(battleRepository).incrementOptionB(1L);
     }
 
-    @Test
-    @DisplayName("투표 성공 - 보상 Timeout 시 RetryQueue 적재")
-    void vote_success_rewardTimeout_enqueued() {
-        Battle battle = activeBattle(LocalDateTime.now().minusDays(1), LocalDateTime.now().plusDays(7));
-        given(battleRepository.findByIdAndDeletedAtIsNull(1L)).willReturn(Optional.of(battle));
-        given(battleVoteRepository.save(any(BattleVote.class))).willReturn(new BattleVote());
-        willThrow(new CustomException(ErrorCode.EXTERNAL_SERVICE_TIMEOUT))
-                .given(memberPointClient).earnPoint(any());
-        given(retryQueueRepository.existsByIdempotencyKey(any())).willReturn(false);
-
-        VoteResponse response = voteService.vote(1L, 1L, voteRequest("A"));
-
-        assertThat(response.getSelectedOption()).isEqualTo("A");
-        verify(retryQueueRepository).save(any());
-    }
-
-    @Test
-    @DisplayName("투표 성공 - 보상 4xx 실패 시 RetryQueue 미적재 (로그만)")
-    void vote_success_reward4xx_notEnqueued() {
-        Battle battle = activeBattle(LocalDateTime.now().minusDays(1), LocalDateTime.now().plusDays(7));
-        given(battleRepository.findByIdAndDeletedAtIsNull(1L)).willReturn(Optional.of(battle));
-        given(battleVoteRepository.save(any(BattleVote.class))).willReturn(new BattleVote());
-        willThrow(new CustomException(ErrorCode.POINT_INSUFFICIENT))
-                .given(memberPointClient).earnPoint(any());
-
-        VoteResponse response = voteService.vote(1L, 1L, voteRequest("A"));
-
-        assertThat(response.getSelectedOption()).isEqualTo("A");
-        verify(retryQueueRepository, never()).save(any());
-    }
+    // RetryQueue 테스트 제거됨 — Kafka+Outbox 전환으로 보상 실패는 컨슈머 쪽에서 DLT로 처리
 
     @Test
     @DisplayName("투표 실패 - PENDING 상태 Battle → BATTLE_NOT_FOUND")

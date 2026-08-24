@@ -3,12 +3,9 @@ package com.todongsan.battle_service.vote.service;
 import com.todongsan.battle_service.battle.entity.Battle;
 import com.todongsan.battle_service.battle.entity.BattleStatus;
 import com.todongsan.battle_service.battle.repository.BattleRepository;
-import com.todongsan.battle_service.client.MemberPointClient;
-import com.todongsan.battle_service.client.dto.PointEarnRequest;
 import com.todongsan.battle_service.global.exception.CustomException;
 import com.todongsan.battle_service.global.exception.ErrorCode;
-import com.todongsan.battle_service.retry.entity.PointRewardRetryQueue;
-import com.todongsan.battle_service.retry.repository.PointRewardRetryQueueRepository;
+import com.todongsan.battle_service.outbox.service.OutboxEventCreator;
 import com.todongsan.battle_service.vote.dto.request.VoteRequest;
 import com.todongsan.battle_service.vote.dto.response.*;
 import com.todongsan.battle_service.vote.entity.BattleVote;
@@ -36,15 +33,15 @@ public class VoteServiceImpl implements VoteService {
 
     private final BattleRepository battleRepository;
     private final BattleVoteRepository battleVoteRepository;
-    private final MemberPointClient memberPointClient;
-    private final PointRewardRetryQueueRepository retryQueueRepository;
+    private final OutboxEventCreator outboxEventCreator;
     private final TransactionTemplate txTemplate;
 
     private static final long RESULT_OPEN_HOURS = 72;
 
     @Override
     public VoteResponse vote(Long battleId, Long memberId, VoteRequest request) {
-        // 1) 검증 + 투표 저장 + 집계는 한 트랜잭션 안에서 (외부 REST 호출 제외)
+        // 투표 저장 + 집계 + 보상 이벤트를 한 트랜잭션에서 처리.
+        // outbox INSERT가 투표 TX 안에 있으므로 이중 쓰기 문제가 없다.
         String option = txTemplate.execute(status -> {
             Battle battle = findActiveOrThrow(battleId);
 
@@ -70,49 +67,21 @@ public class VoteServiceImpl implements VoteService {
             } else {
                 battleRepository.incrementOptionB(battleId);
             }
+
+            // 보상 이벤트 outbox INSERT (같은 트랜잭션)
+            outboxEventCreator.createRewardEvent(
+                    battleId, memberId, "EARN_VOTE", VOTE_REWARD,
+                    "Battle 투표 참여 보상",
+                    "battle:vote:" + battleId + ":member:" + memberId);
+
             return opt;
         });
-
-        // 2) 보상 지급은 트랜잭션 커밋 후 (외부 REST 호출은 트랜잭션 밖)
-        earnVoteReward(battleId, memberId);
 
         return VoteResponse.builder()
                 .battleId(battleId)
                 .selectedOption(option)
                 .message("투표가 완료되었습니다.")
                 .build();
-    }
-
-    private void earnVoteReward(Long battleId, Long memberId) {
-        String idempotencyKey = "battle:vote:" + battleId + ":member:" + memberId;
-        try {
-            memberPointClient.earnPoint(PointEarnRequest.builder()
-                    .memberId(memberId)
-                    .type("EARN_VOTE")
-                    .referenceType("BATTLE")
-                    .referenceId(battleId)
-                    .amount(VOTE_REWARD)
-                    .reason("Battle 투표 참여 보상")
-                    .idempotencyKey(idempotencyKey)
-                    .build());
-        } catch (CustomException e) {
-            if (e.getErrorCode() == ErrorCode.EXTERNAL_SERVICE_TIMEOUT) {
-                if (!retryQueueRepository.existsByIdempotencyKey(idempotencyKey)) {
-                    retryQueueRepository.save(PointRewardRetryQueue.builder()
-                            .memberId(memberId)
-                            .referenceType("BATTLE")
-                            .referenceId(battleId)
-                            .type("EARN_VOTE")
-                            .amount(VOTE_REWARD)
-                            .reason("Battle 투표 참여 보상")
-                            .idempotencyKey(idempotencyKey)
-                            .build());
-                }
-                log.warn("Vote reward enqueued for retry: member={}, battle={}", memberId, battleId);
-            } else {
-                log.warn("Vote reward failed (4xx), manual correction needed: member={}, battle={}", memberId, battleId);
-            }
-        }
     }
 
     @Override

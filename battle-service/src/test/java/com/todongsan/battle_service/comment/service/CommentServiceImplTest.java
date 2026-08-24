@@ -2,7 +2,7 @@ package com.todongsan.battle_service.comment.service;
 
 import com.todongsan.battle_service.battle.entity.Battle;
 import com.todongsan.battle_service.battle.repository.BattleRepository;
-import com.todongsan.battle_service.client.MemberPointClient;
+import com.todongsan.battle_service.outbox.service.OutboxEventCreator;
 import com.todongsan.battle_service.comment.dto.request.CommentCreateRequest;
 import com.todongsan.battle_service.comment.dto.response.CommentInternalResponse;
 import com.todongsan.battle_service.comment.dto.response.CommentResponse;
@@ -10,7 +10,6 @@ import com.todongsan.battle_service.comment.entity.Comment;
 import com.todongsan.battle_service.comment.repository.CommentRepository;
 import com.todongsan.battle_service.global.exception.CustomException;
 import com.todongsan.battle_service.global.exception.ErrorCode;
-import com.todongsan.battle_service.retry.repository.PointRewardRetryQueueRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -44,8 +43,7 @@ class CommentServiceImplTest {
 
     @Mock private BattleRepository battleRepository;
     @Mock private CommentRepository commentRepository;
-    @Mock private MemberPointClient memberPointClient;
-    @Mock private PointRewardRetryQueueRepository retryQueueRepository;
+    @Mock private OutboxEventCreator outboxEventCreator;
     @Mock private TransactionTemplate txTemplate;
 
     @InjectMocks
@@ -71,40 +69,21 @@ class CommentServiceImplTest {
                 CommentCreateRequest.builder().content("좋아요!").build());
 
         assertThat(response.getContent()).isEqualTo("테스트 댓글");
-        verify(memberPointClient).earnPoint(any());
+        verify(outboxEventCreator).createRewardEvent(any(), any(), any(), any(), any(), any());
     }
 
     @Test
-    @DisplayName("댓글 작성 성공 - 보상 Timeout 시 RetryQueue 적재")
-    void createComment_success_rewardTimeout_enqueued() {
+    @DisplayName("댓글 작성 성공 - outbox 보상 이벤트 생성 확인")
+    void createComment_success_outboxEventCreated() {
         Comment comment = comment(1L);
         given(battleRepository.findByIdAndDeletedAtIsNull(1L)).willReturn(Optional.of(activeBattle()));
         given(commentRepository.save(any(Comment.class))).willReturn(comment);
-        willThrow(new CustomException(ErrorCode.EXTERNAL_SERVICE_TIMEOUT))
-                .given(memberPointClient).earnPoint(any());
-        given(retryQueueRepository.existsByIdempotencyKey(any())).willReturn(false);
 
         CommentResponse response = commentService.createComment(1L, 1L,
                 CommentCreateRequest.builder().content("좋아요!").build());
 
         assertThat(response.getContent()).isEqualTo("테스트 댓글");
-        verify(retryQueueRepository).save(any());
-    }
-
-    @Test
-    @DisplayName("댓글 작성 성공 - 보상 4xx 실패 시 RetryQueue 미적재 (로그만)")
-    void createComment_success_reward4xx_notEnqueued() {
-        Comment comment = comment(1L);
-        given(battleRepository.findByIdAndDeletedAtIsNull(1L)).willReturn(Optional.of(activeBattle()));
-        given(commentRepository.save(any(Comment.class))).willReturn(comment);
-        willThrow(new CustomException(ErrorCode.POINT_INSUFFICIENT))
-                .given(memberPointClient).earnPoint(any());
-
-        CommentResponse response = commentService.createComment(1L, 1L,
-                CommentCreateRequest.builder().content("좋아요!").build());
-
-        assertThat(response.getContent()).isEqualTo("테스트 댓글");
-        verify(retryQueueRepository, never()).save(any());
+        verify(outboxEventCreator).createRewardEvent(any(), any(), any(), any(), any(), any());
     }
 
     @Test
