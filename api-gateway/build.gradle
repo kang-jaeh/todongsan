@@ -21,6 +21,13 @@ ext {
 	set('springCloudVersion', "2025.0.2")
 }
 
+def dotenv = file("../.env").readLines()
+		.findAll { it && !it.startsWith('#') && it.contains('=') }
+		.collectEntries { line ->
+			def idx = line.indexOf('=')
+			[(line[0..<idx].trim()): line[(idx + 1)..-1].trim()]
+		}
+
 dependencies {
 	implementation 'org.springframework.cloud:spring-cloud-starter-gateway-server-webflux'
 	implementation 'io.jsonwebtoken:jjwt-api:0.12.6'
@@ -41,6 +48,11 @@ dependencyManagement {
 	}
 }
 
+bootRun {
+	environment dotenv
+}
+
 tasks.named('test') {
+	environment dotenv
 	useJUnitPlatform()
 }
