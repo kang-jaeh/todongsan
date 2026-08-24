@@ -17,6 +17,13 @@ repositories {
 	mavenCentral()
 }
 
+def dotenv = file("../.env").readLines()
+		.findAll { it && !it.startsWith('#') && it.contains('=') }
+		.collectEntries { line ->
+			def idx = line.indexOf('=')
+			[(line[0..<idx].trim()): line[(idx + 1)..-1].trim()]
+		}
+
 dependencies {
 	implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
 	implementation 'org.springframework.boot:spring-boot-starter-security'
@@ -25,22 +32,41 @@ dependencies {
 	implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:2.8.8'
 	implementation 'org.springframework.boot:spring-boot-starter-webflux'
 	implementation 'io.jsonwebtoken:jjwt-api:0.12.6'
+	implementation 'org.springframework.kafka:spring-kafka'
 	compileOnly 'org.projectlombok:lombok'
 	runtimeOnly 'com.mysql:mysql-connector-j'
-runtimeOnly 'io.jsonwebtoken:jjwt-impl:0.12.6'
+	runtimeOnly 'io.jsonwebtoken:jjwt-impl:0.12.6'
 	runtimeOnly 'io.jsonwebtoken:jjwt-jackson:0.12.6'
 	annotationProcessor 'org.projectlombok:lombok'
 	testImplementation 'org.springframework.boot:spring-boot-starter-test'
 	testImplementation 'org.springframework.security:spring-security-test'
 	testImplementation 'com.squareup.okhttp3:mockwebserver:4.12.0'
+	testImplementation 'org.testcontainers:junit-jupiter'
+	testImplementation 'org.testcontainers:mysql'
 	testCompileOnly 'org.projectlombok:lombok'
 	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 	testRuntimeOnly 'com.h2database:h2'
 	testAnnotationProcessor 'org.projectlombok:lombok'
 }
 
+bootRun {
+	environment dotenv
+	environment 'DB_URL', "jdbc:mysql://localhost:3307/${dotenv.DB_MEMBERPOINT}?useSSL=false&serverTimezone=Asia/Seoul&characterEncoding=UTF-8&allowPublicKeyRetrieval=true"
+}
+
 tasks.named('test') {
+	environment dotenv
 	useJUnitPlatform {
 		excludeTags 'integration'
 	}
+}
+
+tasks.register('integrationTest', Test) {
+	description = 'Testcontainers 기반 통합 테스트 (실제 MySQL)'
+	group = 'verification'
+	environment dotenv
+	useJUnitPlatform {
+		includeTags 'integration'
+	}
+	shouldRunAfter tasks.named('test')
 }

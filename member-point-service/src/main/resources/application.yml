@@ -36,6 +36,18 @@ springdoc:
   api-docs:
     path: /v3/api-docs
 
+# ── Kafka ──────────────────────────────────────────────────
+spring.kafka:
+  bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+  consumer:
+    group-id: member-point-service
+    auto-offset-reset: earliest
+    enable-auto-commit: false       # 처리 완료 후 수동 ack (at-least-once)
+    key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+  listener:
+    ack-mode: manual                # AcknowledgingMessageListener로 수동 커밋
+
 logging:
   level:
     com.todongsan.memberpointservice: DEBUG

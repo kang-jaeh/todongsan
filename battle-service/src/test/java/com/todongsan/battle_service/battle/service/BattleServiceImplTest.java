@@ -8,11 +8,10 @@ import com.todongsan.battle_service.battle.dto.response.MyCreatedBattleResponse;
 import com.todongsan.battle_service.battle.entity.Battle;
 import com.todongsan.battle_service.battle.entity.BattleStatus;
 import com.todongsan.battle_service.battle.repository.BattleRepository;
-import com.todongsan.battle_service.client.MemberPointClient;
+import com.todongsan.battle_service.outbox.service.OutboxEventCreator;
 import com.todongsan.battle_service.comment.repository.CommentRepository;
 import com.todongsan.battle_service.global.exception.CustomException;
 import com.todongsan.battle_service.global.exception.ErrorCode;
-import com.todongsan.battle_service.retry.repository.PointRewardRetryQueueRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -47,8 +46,7 @@ class BattleServiceImplTest {
 
     @Mock private BattleRepository battleRepository;
     @Mock private CommentRepository commentRepository;
-    @Mock private MemberPointClient memberPointClient;
-    @Mock private PointRewardRetryQueueRepository retryQueueRepository;
+    @Mock private OutboxEventCreator outboxEventCreator;
     @Mock private TransactionTemplate txTemplate;
 
     @InjectMocks
@@ -267,36 +265,19 @@ class BattleServiceImplTest {
         BattleStatusResponse response = battleService.approveBattle(1L);
 
         assertThat(response.getStatus()).isEqualTo("ACTIVE");
-        verify(memberPointClient).earnPoint(any());
+        verify(outboxEventCreator).createRewardEvent(any(), any(), any(), any(), any(), any());
     }
 
     @Test
-    @DisplayName("Battle 승인 성공 - 보상 Timeout 시 RetryQueue 적재")
-    void approveBattle_success_rewardTimeout_enqueued() {
+    @DisplayName("Battle 승인 성공 - outbox 보상 이벤트 생성 확인")
+    void approveBattle_success_outboxEventCreated() {
         Battle battle = pendingBattle();
         given(battleRepository.findByIdAndDeletedAtIsNull(1L)).willReturn(Optional.of(battle));
-        willThrow(new CustomException(ErrorCode.EXTERNAL_SERVICE_TIMEOUT))
-                .given(memberPointClient).earnPoint(any());
-        given(retryQueueRepository.existsByIdempotencyKey(any())).willReturn(false);
 
         BattleStatusResponse response = battleService.approveBattle(1L);
 
         assertThat(response.getStatus()).isEqualTo("ACTIVE");
-        verify(retryQueueRepository).save(any());
-    }
-
-    @Test
-    @DisplayName("Battle 승인 성공 - 보상 4xx 실패 시 RetryQueue 미적재 (로그만)")
-    void approveBattle_success_reward4xx_notEnqueued() {
-        Battle battle = pendingBattle();
-        given(battleRepository.findByIdAndDeletedAtIsNull(1L)).willReturn(Optional.of(battle));
-        willThrow(new CustomException(ErrorCode.POINT_INSUFFICIENT))
-                .given(memberPointClient).earnPoint(any());
-
-        BattleStatusResponse response = battleService.approveBattle(1L);
-
-        assertThat(response.getStatus()).isEqualTo("ACTIVE");
-        verify(retryQueueRepository, never()).save(any());
+        verify(outboxEventCreator).createRewardEvent(any(), any(), any(), any(), any(), any());
     }
 
     @Test

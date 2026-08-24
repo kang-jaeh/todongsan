@@ -2,10 +2,7 @@ package com.todongsan.battle_service.battle.scheduler;
 
 import com.todongsan.battle_service.battle.entity.Battle;
 import com.todongsan.battle_service.battle.repository.BattleRepository;
-import com.todongsan.battle_service.client.MemberPointClient;
-import com.todongsan.battle_service.client.dto.PointEarnRequest;
-import com.todongsan.battle_service.retry.entity.PointRewardRetryQueue;
-import com.todongsan.battle_service.retry.repository.PointRewardRetryQueueRepository;
+import com.todongsan.battle_service.outbox.service.OutboxEventCreator;
 import com.todongsan.battle_service.vote.entity.BattleVote;
 import com.todongsan.battle_service.vote.repository.BattleVoteRepository;
 import lombok.RequiredArgsConstructor;
@@ -15,9 +12,18 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
-import java.util.ArrayList;
 import java.util.List;
 
+/**
+ * Battle 정산 스케줄러.
+ *
+ * 기존: REST 동기 호출(Battle → Member-Point) + RetryQueue
+ * 변경: Transactional Outbox 패턴 — 정산 TX 안에서 outbox_event INSERT,
+ *       폴링 퍼블리셔가 Kafka로 발행, Member-Point 컨슈머가 earn() 호출.
+ *
+ * 핵심: 비즈니스 변경(정산 확정)과 이벤트 기록이 같은 트랜잭션이므로
+ *       "정산은 됐는데 보상 이벤트 유실" 문제(이중 쓰기)가 원천 차단된다.
+ */
 @Slf4j
 @Component
 @RequiredArgsConstructor
@@ -28,8 +34,7 @@ public class BattleSettleScheduler {
 
     private final BattleRepository battleRepository;
     private final BattleVoteRepository battleVoteRepository;
-    private final MemberPointClient memberPointClient;
-    private final PointRewardRetryQueueRepository retryQueueRepository;
+    private final OutboxEventCreator outboxEventCreator;
     private final TransactionTemplate txTemplate;
 
     @Scheduled(fixedDelay = 60000)
@@ -50,74 +55,37 @@ public class BattleSettleScheduler {
     }
 
     /**
-     * Battle 한 건 정산. 외부 REST 호출(보상 지급)은 트랜잭션 밖에서 수행한다.
-     * 1) (tx) 승자 진영 미보상 투표자 조회. DRAW면 보상 없이 즉시 정산 완료.
-     * 2) (no tx) 투표자별 보상 REST 호출 → 성공/실패 분리
-     * 3) (tx) 성공자 is_rewarded=true, 실패자 RetryQueue 적재, Battle settled 처리
+     * Battle 한 건 정산.
+     * 하나의 트랜잭션에서: 승자 확정 + 승자별 outbox_event INSERT + Battle settled 처리.
+     * 외부 REST 호출 없음 — 보상 지급은 Kafka 컨슈머(Member-Point)가 비동기로 처리한다.
      */
     private void settleOneBattle(Long battleId) {
-        List<Long> winnerMemberIds = txTemplate.execute(status -> {
+        txTemplate.executeWithoutResult(status -> {
             Battle battle = battleRepository.findById(battleId).orElse(null);
             if (battle == null || battle.isSettled()) {
-                return null;
+                return;
             }
+
             if (DRAW.equals(battle.getWinningOption())) {
                 battle.settle(BigDecimal.ZERO);
                 log.info("Battle [{}] settled as DRAW", battleId);
-                return null;
+                return;
             }
-            return battleVoteRepository
-                    .findByBattleIdAndSelectedOptionAndIsRewardedFalse(battleId, battle.getWinningOption())
-                    .stream()
-                    .map(BattleVote::getMemberId)
-                    .toList();
-        });
 
-        if (winnerMemberIds == null) {
-            return; // DRAW 또는 이미 정산됨
-        }
+            List<BattleVote> winnerVotes = battleVoteRepository
+                    .findByBattleIdAndSelectedOptionAndIsRewardedFalse(battleId, battle.getWinningOption());
 
-        List<Long> rewarded = new ArrayList<>();
-        List<Long> failed = new ArrayList<>();
-        for (Long memberId : winnerMemberIds) {
-            try {
-                memberPointClient.earnPoint(PointEarnRequest.builder()
-                        .memberId(memberId)
-                        .type("EARN_VOTE_WIN")
-                        .referenceType("BATTLE")
-                        .referenceId(battleId)
-                        .amount(VOTE_WIN_REWARD)
-                        .reason("배틀 승리 보상")
-                        .idempotencyKey(settleKey(battleId, memberId))
-                        .build());
-                rewarded.add(memberId);
-            } catch (Exception e) {
-                log.warn("Battle [{}] member [{}] 승리 보상 실패, 재시도 적재", battleId, memberId);
-                failed.add(memberId);
+            for (BattleVote vote : winnerVotes) {
+                String idempotencyKey = settleKey(battleId, vote.getMemberId());
+                outboxEventCreator.createRewardEvent(
+                        battleId, vote.getMemberId(),
+                        "EARN_VOTE_WIN", VOTE_WIN_REWARD,
+                        "배틀 승리 보상", idempotencyKey);
+                vote.markRewarded();
             }
-        }
 
-        txTemplate.executeWithoutResult(status -> {
-            for (Long memberId : rewarded) {
-                battleVoteRepository.findByBattleIdAndMemberId(battleId, memberId)
-                        .ifPresent(BattleVote::markRewarded);
-            }
-            for (Long memberId : failed) {
-                String key = settleKey(battleId, memberId);
-                if (!retryQueueRepository.existsByIdempotencyKey(key)) {
-                    retryQueueRepository.save(PointRewardRetryQueue.builder()
-                            .memberId(memberId)
-                            .referenceType("BATTLE")
-                            .referenceId(battleId)
-                            .type("EARN_VOTE_WIN")
-                            .amount(VOTE_WIN_REWARD)
-                            .reason("배틀 승리 보상")
-                            .idempotencyKey(key)
-                            .build());
-                }
-            }
-            battleRepository.findById(battleId).ifPresent(b -> b.settle(VOTE_WIN_REWARD));
-            log.info("Battle [{}] settled. rewarded={}, retryEnqueued={}", battleId, rewarded.size(), failed.size());
+            battle.settle(VOTE_WIN_REWARD);
+            log.info("Battle [{}] settled. outbox events={}", battleId, winnerVotes.size());
         });
     }
 

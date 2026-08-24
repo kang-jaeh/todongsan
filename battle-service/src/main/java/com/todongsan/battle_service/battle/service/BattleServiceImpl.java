@@ -5,13 +5,10 @@ import com.todongsan.battle_service.battle.dto.response.*;
 import com.todongsan.battle_service.battle.entity.Battle;
 import com.todongsan.battle_service.battle.entity.BattleStatus;
 import com.todongsan.battle_service.battle.repository.BattleRepository;
-import com.todongsan.battle_service.client.MemberPointClient;
-import com.todongsan.battle_service.client.dto.PointEarnRequest;
 import com.todongsan.battle_service.comment.repository.CommentRepository;
 import com.todongsan.battle_service.global.exception.CustomException;
 import com.todongsan.battle_service.global.exception.ErrorCode;
-import com.todongsan.battle_service.retry.entity.PointRewardRetryQueue;
-import com.todongsan.battle_service.retry.repository.PointRewardRetryQueueRepository;
+import com.todongsan.battle_service.outbox.service.OutboxEventCreator;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
@@ -35,8 +32,7 @@ public class BattleServiceImpl implements BattleService {
 
     private final BattleRepository battleRepository;
     private final CommentRepository commentRepository;
-    private final MemberPointClient memberPointClient;
-    private final PointRewardRetryQueueRepository retryQueueRepository;
+    private final OutboxEventCreator outboxEventCreator;
     private final TransactionTemplate txTemplate;
 
     @Override
@@ -100,52 +96,24 @@ public class BattleServiceImpl implements BattleService {
 
     @Override
     public BattleStatusResponse approveBattle(Long battleId) {
-        // 1) 상태 전이는 트랜잭션 안에서 (외부 REST 호출 제외)
+        // 상태 전이 + 보상 이벤트를 한 트랜잭션에서 처리
         Battle battle = txTemplate.execute(status -> {
             Battle b = findByIdOrThrow(battleId);
             if (b.getStatus() != BattleStatus.PENDING) {
                 throw new CustomException(ErrorCode.BATTLE_INVALID_STATUS);
             }
             b.approve();
+
+            // 승인 보상 이벤트 outbox INSERT (같은 트랜잭션)
+            outboxEventCreator.createRewardEvent(
+                    battleId, b.getCreatedBy(), "EARN_BATTLE_APPROVED", APPROVED_REWARD,
+                    "Battle 주제 등록 승인 보상",
+                    "battle:approved:" + battleId + ":member:" + b.getCreatedBy());
+
             return b;
         });
 
-        // 2) 승인 보상은 트랜잭션 커밋 후 (외부 REST 호출은 트랜잭션 밖)
-        earnApprovedReward(battleId, battle.getCreatedBy());
-
         return BattleStatusResponse.from(battle);
-    }
-
-    private void earnApprovedReward(Long battleId, Long createdBy) {
-        String idempotencyKey = "battle:approved:" + battleId + ":member:" + createdBy;
-        try {
-            memberPointClient.earnPoint(PointEarnRequest.builder()
-                    .memberId(createdBy)
-                    .type("EARN_BATTLE_APPROVED")
-                    .referenceType("BATTLE")
-                    .referenceId(battleId)
-                    .amount(APPROVED_REWARD)
-                    .reason("Battle 주제 등록 승인 보상")
-                    .idempotencyKey(idempotencyKey)
-                    .build());
-        } catch (CustomException e) {
-            if (e.getErrorCode() == ErrorCode.EXTERNAL_SERVICE_TIMEOUT) {
-                if (!retryQueueRepository.existsByIdempotencyKey(idempotencyKey)) {
-                    retryQueueRepository.save(PointRewardRetryQueue.builder()
-                            .memberId(createdBy)
-                            .referenceType("BATTLE")
-                            .referenceId(battleId)
-                            .type("EARN_BATTLE_APPROVED")
-                            .amount(APPROVED_REWARD)
-                            .reason("Battle 주제 등록 승인 보상")
-                            .idempotencyKey(idempotencyKey)
-                            .build());
-                }
-                log.warn("Approved reward enqueued for retry: member={}, battle={}", createdBy, battleId);
-            } else {
-                log.warn("Approved reward failed (4xx), manual correction needed: member={}, battle={}", createdBy, battleId);
-            }
-        }
     }
 
     @Override

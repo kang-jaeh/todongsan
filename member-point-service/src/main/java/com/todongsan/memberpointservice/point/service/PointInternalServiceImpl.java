@@ -12,9 +12,12 @@ import com.todongsan.memberpointservice.point.entity.PointHistoryType;
 import com.todongsan.memberpointservice.point.entity.PointReferenceType;
 import com.todongsan.memberpointservice.point.entity.PointTransactionStatus;
 import com.todongsan.memberpointservice.point.repository.PointHistoryRepository;
-import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -22,187 +25,230 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
+/**
+ * 포인트 적립/차감/정산/환불 처리.
+ *
+ * earn/spend는 TransactionTemplate으로 트랜잭션을 명시적으로 관리한다.
+ * 이유: PENDING 선삽입 시 DataIntegrityViolationException이 발생하면
+ * Spring이 트랜잭션을 rollback-only로 마킹하기 때문에,
+ * 트랜잭션 외부에서 예외를 처리해야 UnexpectedRollbackException을 피할 수 있다.
+ */
+@Slf4j
 @Service
-@RequiredArgsConstructor
-@Transactional(readOnly = true)
 public class PointInternalServiceImpl implements PointInternalService {
 
     private final MemberRepository memberRepository;
     private final PointHistoryRepository pointHistoryRepository;
+    private final TransactionTemplate txTemplate;
 
-    @Override
-    @Transactional
-    public PointResult<EarnResponse> earn(String idempotencyKey, EarnRequest request) {
-        if (idempotencyKey == null || idempotencyKey.isBlank()) {
-            throw new CustomException(ErrorCode.IDEMPOTENCY_KEY_REQUIRED);
-        }
-
-        Optional<PointHistory> existing = pointHistoryRepository.findByIdempotencyKey(idempotencyKey);
-        if (existing.isPresent()) {
-            String newHash = RequestHashUtil.compute(
-                    request.getMemberId(), request.getType(),
-                    request.getAmount(), request.getReferenceType(), request.getReferenceId());
-            if (newHash.equals(existing.get().getRequestHash())) {
-                return PointResult.alreadyProcessed(new EarnResponse(existing.get()));
-            }
-            throw new CustomException(ErrorCode.IDEMPOTENCY_KEY_CONFLICT);
-        }
-
-        if (request.getAmount() == null || request.getAmount().compareTo(BigDecimal.ZERO) <= 0) {
-            throw new CustomException(ErrorCode.POINT_INVALID_AMOUNT);
-        }
-
-        PointReferenceType refType = parseReferenceType(request.getReferenceType());
-        PointHistoryType histType = parseHistoryType(request.getType());
-
-        memberRepository.findByIdAndDeletedAtIsNull(request.getMemberId())
-                .orElseThrow(() -> new CustomException(ErrorCode.MEMBER_NOT_FOUND));
-
-        BigDecimal normalizedAmount = request.getAmount().setScale(2, RoundingMode.DOWN);
-        memberRepository.earnPoint(request.getMemberId(), normalizedAmount);
-
-        Member updated = memberRepository.findByIdAndDeletedAtIsNull(request.getMemberId())
-                .orElseThrow(() -> new CustomException(ErrorCode.MEMBER_NOT_FOUND));
-
-        String requestHash = RequestHashUtil.compute(
-                request.getMemberId(), request.getType(),
-                request.getAmount(), request.getReferenceType(), request.getReferenceId());
-
-        PointHistory history = PointHistory.builder()
-                .memberId(request.getMemberId())
-                .type(histType)
-                .amount(normalizedAmount)
-                .balanceSnapshot(updated.getPointBalance())
-                .reason(request.getReason())
-                .referenceType(refType)
-                .referenceId(request.getReferenceId())
-                .idempotencyKey(idempotencyKey)
-                .requestHash(requestHash)
-                .status(PointTransactionStatus.SUCCEEDED)
-                .build();
-
-        pointHistoryRepository.save(history);
-
-        return PointResult.of(new EarnResponse(history));
+    public PointInternalServiceImpl(MemberRepository memberRepository,
+                                    PointHistoryRepository pointHistoryRepository,
+                                    PlatformTransactionManager transactionManager) {
+        this.memberRepository = memberRepository;
+        this.pointHistoryRepository = pointHistoryRepository;
+        this.txTemplate = new TransactionTemplate(transactionManager);
     }
 
+    // ─── earn ─────────────────────────────────────────────────
+
     @Override
-    @Transactional(noRollbackFor = CustomException.class)
-    public PointResult<SpendResponse> spend(String idempotencyKey, SpendRequest request) {
-        if (idempotencyKey == null || idempotencyKey.isBlank()) {
-            throw new CustomException(ErrorCode.IDEMPOTENCY_KEY_REQUIRED);
-        }
-
-        Optional<PointHistory> existing = pointHistoryRepository.findByIdempotencyKey(idempotencyKey);
-        if (existing.isPresent()) {
-            PointHistory history = existing.get();
-            String newHash = RequestHashUtil.compute(
-                    request.getMemberId(), request.getType(),
-                    request.getAmount(), request.getReferenceType(), request.getReferenceId());
-            if (newHash.equals(history.getRequestHash())) {
-                if (history.getStatus() == PointTransactionStatus.FAILED) {
-                    throw new CustomException(ErrorCode.POINT_INSUFFICIENT);
-                }
-                return PointResult.alreadyProcessed(new SpendResponse(history));
-            }
-            throw new CustomException(ErrorCode.IDEMPOTENCY_KEY_CONFLICT);
-        }
-
-        if (request.getAmount() == null || request.getAmount().compareTo(BigDecimal.ZERO) <= 0) {
-            throw new CustomException(ErrorCode.POINT_INVALID_AMOUNT);
-        }
+    public PointResult<EarnResponse> earn(String idempotencyKey, EarnRequest request) {
+        validateIdempotencyKey(idempotencyKey);
+        validateAmount(request.getAmount());
 
         PointReferenceType refType = parseReferenceType(request.getReferenceType());
         PointHistoryType histType = parseHistoryType(request.getType());
-
-        Member member = memberRepository.findByIdAndDeletedAtIsNull(request.getMemberId())
-                .orElseThrow(() -> new CustomException(ErrorCode.MEMBER_NOT_FOUND));
-
         BigDecimal normalizedAmount = request.getAmount().setScale(2, RoundingMode.DOWN);
         String requestHash = RequestHashUtil.compute(
                 request.getMemberId(), request.getType(),
                 request.getAmount(), request.getReferenceType(), request.getReferenceId());
 
-        int affected = memberRepository.spendPoint(request.getMemberId(), normalizedAmount);
-        if (affected == 0) {
-            PointHistory failedHistory = PointHistory.builder()
-                    .memberId(request.getMemberId())
-                    .type(histType)
-                    .amount(normalizedAmount)
-                    .balanceSnapshot(member.getPointBalance())
-                    .reason(request.getReason())
-                    .referenceType(refType)
-                    .referenceId(request.getReferenceId())
-                    .idempotencyKey(idempotencyKey)
-                    .requestHash(requestHash)
-                    .status(PointTransactionStatus.FAILED)
-                    .failReason(ErrorCode.POINT_INSUFFICIENT.getCode())
-                    .build();
-            pointHistoryRepository.save(failedHistory);
+        // 1. 낙관적 검사 — 대부분의 중복 요청은 여기서 걸린다 (auto-commit read)
+        Optional<PointHistory> existing = pointHistoryRepository.findByIdempotencyKey(idempotencyKey);
+        if (existing.isPresent()) {
+            return handleExistingEarn(existing.get(), requestHash);
+        }
+
+        // 2. 단일 트랜잭션: PENDING 선삽입 → 잔액 UPDATE → confirm
+        try {
+            return txTemplate.execute(status -> {
+                memberRepository.findByIdAndDeletedAtIsNull(request.getMemberId())
+                        .orElseThrow(() -> new CustomException(ErrorCode.MEMBER_NOT_FOUND));
+
+                PointHistory pending = PointHistory.builder()
+                        .memberId(request.getMemberId())
+                        .type(histType)
+                        .amount(normalizedAmount)
+                        .balanceSnapshot(BigDecimal.ZERO)
+                        .reason(request.getReason())
+                        .referenceType(refType)
+                        .referenceId(request.getReferenceId())
+                        .idempotencyKey(idempotencyKey)
+                        .requestHash(requestHash)
+                        .status(PointTransactionStatus.PENDING)
+                        .build();
+
+                // UNIQUE 제약이 동시 중복을 차단한다.
+                // 두 번째 요청은 InnoDB 유니크 인덱스 락에서 대기 → 선행 커밋 후 DuplicateKey
+                pointHistoryRepository.saveAndFlush(pending);
+
+                // 잔액 적립 + snapshot 확정 (같은 트랜잭션)
+                // @Modifying(clearAutomatically=true)가 영속성 컨텍스트를 초기화하므로
+                // save()로 pending을 재영속화해야 confirm()의 변경이 커밋에 반영된다
+                memberRepository.earnPoint(request.getMemberId(), normalizedAmount);
+                Member updated = memberRepository.findByIdAndDeletedAtIsNull(request.getMemberId())
+                        .orElseThrow(() -> new CustomException(ErrorCode.MEMBER_NOT_FOUND));
+                pending = pointHistoryRepository.save(pending);
+                pending.confirm(updated.getPointBalance());
+
+                return PointResult.of(new EarnResponse(pending));
+            });
+        } catch (DataIntegrityViolationException e) {
+            // 트랜잭션이 롤백된 후 여기에 도달. auto-commit read로 선행 요청의 확정 결과를 조회한다.
+            // InnoDB 유니크 인덱스 락 덕분에 선행 트랜잭션은 이미 커밋된 상태.
+            PointHistory winner = pointHistoryRepository.findByIdempotencyKey(idempotencyKey)
+                    .orElseThrow(() -> e); // 키로 못 찾으면 다른 제약 위반 → 원래 예외 전파
+            return handleExistingEarn(winner, requestHash);
+        }
+    }
+
+    /**
+     * 이미 존재하는 earn 이력에 대한 응답 매핑.
+     *
+     * SUCCEEDED + 해시 일치 → 200 ALREADY_PROCESSED
+     * FAILED    + 해시 일치 → 최초와 동일한 실패 응답 재현
+     * 해시 불일치           → 409 IDEMPOTENCY_KEY_CONFLICT
+     * PENDING (방어적)      → 409 — 단일 트랜잭션에서는 구조적으로 불가하나,
+     *                         락 타임아웃 등 극단적 경우에 대비
+     */
+    private PointResult<EarnResponse> handleExistingEarn(PointHistory history, String requestHash) {
+        if (history.getStatus() == PointTransactionStatus.PENDING) {
+            log.warn("PENDING 상태 이력 발견 (idempotencyKey={}). "
+                    + "선행 요청이 처리 중이거나 비정상 잔재. 재시도 필요.", history.getIdempotencyKey());
+            throw new CustomException(ErrorCode.IDEMPOTENCY_KEY_CONFLICT);
+        }
+        if (!requestHash.equals(history.getRequestHash())) {
+            throw new CustomException(ErrorCode.IDEMPOTENCY_KEY_CONFLICT);
+        }
+        return PointResult.alreadyProcessed(new EarnResponse(history));
+    }
+
+    // ─── spend ────────────────────────────────────────────────
+
+    @Override
+    public PointResult<SpendResponse> spend(String idempotencyKey, SpendRequest request) {
+        validateIdempotencyKey(idempotencyKey);
+        validateAmount(request.getAmount());
+
+        PointReferenceType refType = parseReferenceType(request.getReferenceType());
+        PointHistoryType histType = parseHistoryType(request.getType());
+        BigDecimal normalizedAmount = request.getAmount().setScale(2, RoundingMode.DOWN);
+        String requestHash = RequestHashUtil.compute(
+                request.getMemberId(), request.getType(),
+                request.getAmount(), request.getReferenceType(), request.getReferenceId());
+
+        // 1. 낙관적 검사
+        Optional<PointHistory> existing = pointHistoryRepository.findByIdempotencyKey(idempotencyKey);
+        if (existing.isPresent()) {
+            return handleExistingSpend(existing.get(), requestHash);
+        }
+
+        // 2. 단일 트랜잭션: PENDING → 차감 → confirm/fail
+        //    잔액 부족 시 FAILED 상태를 커밋하기 위해 callback에서 예외를 던지지 않고
+        //    null을 반환한 뒤 트랜잭션 커밋 후 바깥에서 CustomException을 던진다.
+        try {
+            PointResult<SpendResponse> result = txTemplate.execute(status -> {
+                Member member = memberRepository.findByIdAndDeletedAtIsNull(request.getMemberId())
+                        .orElseThrow(() -> new CustomException(ErrorCode.MEMBER_NOT_FOUND));
+
+                PointHistory pending = PointHistory.builder()
+                        .memberId(request.getMemberId())
+                        .type(histType)
+                        .amount(normalizedAmount)
+                        .balanceSnapshot(BigDecimal.ZERO)
+                        .reason(request.getReason())
+                        .referenceType(refType)
+                        .referenceId(request.getReferenceId())
+                        .idempotencyKey(idempotencyKey)
+                        .requestHash(requestHash)
+                        .status(PointTransactionStatus.PENDING)
+                        .build();
+
+                pointHistoryRepository.saveAndFlush(pending);
+
+                int affected = memberRepository.spendPoint(request.getMemberId(), normalizedAmount);
+                if (affected == 0) {
+                    // 잔액 부족: PENDING → FAILED 확정.
+                    // 예외를 던지지 않으므로 트랜잭션이 커밋되어 FAILED 이력이 저장된다.
+                    pending = pointHistoryRepository.save(pending);
+                    pending.fail(member.getPointBalance(), ErrorCode.POINT_INSUFFICIENT.getCode());
+                    return null; // 잔액 부족 시그널
+                }
+
+                Member updated = memberRepository.findByIdAndDeletedAtIsNull(request.getMemberId())
+                        .orElseThrow(() -> new CustomException(ErrorCode.MEMBER_NOT_FOUND));
+                pending = pointHistoryRepository.save(pending);
+                pending.confirm(updated.getPointBalance());
+
+                return PointResult.of(new SpendResponse(pending));
+            });
+
+            if (result == null) {
+                throw new CustomException(ErrorCode.POINT_INSUFFICIENT);
+            }
+            return result;
+
+        } catch (DataIntegrityViolationException e) {
+            PointHistory winner = pointHistoryRepository.findByIdempotencyKey(idempotencyKey)
+                    .orElseThrow(() -> e);
+            return handleExistingSpend(winner, requestHash);
+        }
+    }
+
+    /**
+     * 이미 존재하는 spend 이력에 대한 응답 매핑.
+     *
+     * SUCCEEDED + 해시 일치 → 최초 성공 응답 재반환
+     * FAILED    + 해시 일치 → "같은 요청 → 같은 응답" — 잔액부족이면 다시 POINT_INSUFFICIENT
+     * 해시 불일치           → 409
+     * PENDING (방어적)      → 409
+     */
+    private PointResult<SpendResponse> handleExistingSpend(PointHistory history, String requestHash) {
+        if (history.getStatus() == PointTransactionStatus.PENDING) {
+            log.warn("PENDING 상태 이력 발견 (idempotencyKey={}). "
+                    + "선행 요청이 처리 중이거나 비정상 잔재. 재시도 필요.", history.getIdempotencyKey());
+            throw new CustomException(ErrorCode.IDEMPOTENCY_KEY_CONFLICT);
+        }
+        if (!requestHash.equals(history.getRequestHash())) {
+            throw new CustomException(ErrorCode.IDEMPOTENCY_KEY_CONFLICT);
+        }
+        if (history.getStatus() == PointTransactionStatus.FAILED) {
             throw new CustomException(ErrorCode.POINT_INSUFFICIENT);
         }
-
-        Member updated = memberRepository.findByIdAndDeletedAtIsNull(request.getMemberId())
-                .orElseThrow(() -> new CustomException(ErrorCode.MEMBER_NOT_FOUND));
-
-        PointHistory history = PointHistory.builder()
-                .memberId(request.getMemberId())
-                .type(histType)
-                .amount(normalizedAmount)
-                .balanceSnapshot(updated.getPointBalance())
-                .reason(request.getReason())
-                .referenceType(refType)
-                .referenceId(request.getReferenceId())
-                .idempotencyKey(idempotencyKey)
-                .requestHash(requestHash)
-                .status(PointTransactionStatus.SUCCEEDED)
-                .build();
-
-        pointHistoryRepository.save(history);
-        return PointResult.of(new SpendResponse(history));
+        return PointResult.alreadyProcessed(new SpendResponse(history));
     }
 
-    private PointReferenceType parseReferenceType(String referenceType) {
-        if (referenceType == null || referenceType.isBlank()) {
-            return null;
-        }
-        try {
-            return PointReferenceType.valueOf(referenceType);
-        } catch (IllegalArgumentException e) {
-            throw new CustomException(ErrorCode.POINT_INVALID_REFERENCE_TYPE);
-        }
-    }
-
-    private PointHistoryType parseHistoryType(String type) {
-        if (type == null || type.isBlank()) {
-            throw new CustomException(ErrorCode.VALIDATION_FAILED);
-        }
-        try {
-            return PointHistoryType.valueOf(type);
-        } catch (IllegalArgumentException e) {
-            throw new CustomException(ErrorCode.VALIDATION_FAILED);
-        }
-    }
+    // ─── getTransaction ──────────────────────────────────────
 
     @Override
+    @Transactional(readOnly = true)
     public TransactionResponse getTransaction(String idempotencyKey) {
-
-        if (idempotencyKey == null || idempotencyKey.isBlank()) {
-            throw new CustomException(ErrorCode.IDEMPOTENCY_KEY_REQUIRED);
-        }
+        validateIdempotencyKey(idempotencyKey);
 
         Optional<PointHistory> opt = pointHistoryRepository.findByIdempotencyKey(idempotencyKey);
-
         if (opt.isEmpty()) {
             return TransactionResponse.builder()
                     .idempotencyKey(idempotencyKey)
                     .status("NOT_FOUND")
                     .build();
-
         }
 
         PointHistory history = opt.get();
-        String status = history.getStatus() == PointTransactionStatus.SUCCEEDED ? "PROCESSED" : "FAILED";
+        String status = switch (history.getStatus()) {
+            case SUCCEEDED -> "PROCESSED";
+            case FAILED -> "FAILED";
+            case PENDING -> "PENDING";
+        };
 
         return TransactionResponse.builder()
                 .idempotencyKey(history.getIdempotencyKey())
@@ -218,19 +264,17 @@ public class PointInternalServiceImpl implements PointInternalService {
                 .build();
     }
 
+    // ─── settle / refund (Phase 2.5에서 트랜잭션 경계 수정 예정) ──
+
     @Override
     @Transactional
     public SettlementResponse settle(String idempotencyKey, SettlementRequest request) {
-        if (idempotencyKey == null || idempotencyKey.isBlank()) {
-            throw new CustomException(ErrorCode.IDEMPOTENCY_KEY_REQUIRED);
-        }
+        validateIdempotencyKey(idempotencyKey);
         if (!idempotencyKey.equals(request.getSettlementId())) {
             throw new CustomException(ErrorCode.INVALID_REQUEST);
         }
         for (SettlementItem item : request.getItems()) {
-            if (item.getIdempotencyKey() == null || item.getIdempotencyKey().isBlank()) {
-                throw new CustomException(ErrorCode.IDEMPOTENCY_KEY_REQUIRED);
-            }
+            validateIdempotencyKey(item.getIdempotencyKey());
         }
 
         List<BatchItemResult> results = new ArrayList<>();
@@ -251,16 +295,12 @@ public class PointInternalServiceImpl implements PointInternalService {
     @Override
     @Transactional
     public RefundResponse refund(String idempotencyKey, RefundRequest request) {
-        if (idempotencyKey == null || idempotencyKey.isBlank()) {
-            throw new CustomException(ErrorCode.IDEMPOTENCY_KEY_REQUIRED);
-        }
+        validateIdempotencyKey(idempotencyKey);
         if (!idempotencyKey.equals(request.getRefundId())) {
             throw new CustomException(ErrorCode.INVALID_REQUEST);
         }
         for (RefundItem item : request.getItems()) {
-            if (item.getIdempotencyKey() == null || item.getIdempotencyKey().isBlank()) {
-                throw new CustomException(ErrorCode.IDEMPOTENCY_KEY_REQUIRED);
-            }
+            validateIdempotencyKey(item.getIdempotencyKey());
         }
 
         List<BatchItemResult> results = new ArrayList<>();
@@ -375,5 +415,39 @@ public class PointInternalServiceImpl implements PointInternalService {
                 .build();
     }
 
+    // ─── 공통 검증 ────────────────────────────────────────────
 
+    private void validateIdempotencyKey(String idempotencyKey) {
+        if (idempotencyKey == null || idempotencyKey.isBlank()) {
+            throw new CustomException(ErrorCode.IDEMPOTENCY_KEY_REQUIRED);
+        }
+    }
+
+    private void validateAmount(BigDecimal amount) {
+        if (amount == null || amount.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new CustomException(ErrorCode.POINT_INVALID_AMOUNT);
+        }
+    }
+
+    private PointReferenceType parseReferenceType(String referenceType) {
+        if (referenceType == null || referenceType.isBlank()) {
+            return null;
+        }
+        try {
+            return PointReferenceType.valueOf(referenceType);
+        } catch (IllegalArgumentException e) {
+            throw new CustomException(ErrorCode.POINT_INVALID_REFERENCE_TYPE);
+        }
+    }
+
+    private PointHistoryType parseHistoryType(String type) {
+        if (type == null || type.isBlank()) {
+            throw new CustomException(ErrorCode.VALIDATION_FAILED);
+        }
+        try {
+            return PointHistoryType.valueOf(type);
+        } catch (IllegalArgumentException e) {
+            throw new CustomException(ErrorCode.VALIDATION_FAILED);
+        }
+    }
 }

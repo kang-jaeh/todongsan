@@ -3,8 +3,6 @@ package com.todongsan.battle_service.comment.service;
 import com.todongsan.battle_service.battle.entity.Battle;
 import com.todongsan.battle_service.battle.entity.BattleStatus;
 import com.todongsan.battle_service.battle.repository.BattleRepository;
-import com.todongsan.battle_service.client.MemberPointClient;
-import com.todongsan.battle_service.client.dto.PointEarnRequest;
 import com.todongsan.battle_service.comment.dto.request.CommentCreateRequest;
 import com.todongsan.battle_service.comment.dto.response.CommentInternalResponse;
 import com.todongsan.battle_service.comment.dto.response.CommentResponse;
@@ -12,8 +10,7 @@ import com.todongsan.battle_service.comment.entity.Comment;
 import com.todongsan.battle_service.comment.repository.CommentRepository;
 import com.todongsan.battle_service.global.exception.CustomException;
 import com.todongsan.battle_service.global.exception.ErrorCode;
-import com.todongsan.battle_service.retry.entity.PointRewardRetryQueue;
-import com.todongsan.battle_service.retry.repository.PointRewardRetryQueueRepository;
+import com.todongsan.battle_service.outbox.service.OutboxEventCreator;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
@@ -35,13 +32,12 @@ public class CommentServiceImpl implements CommentService {
 
     private final BattleRepository battleRepository;
     private final CommentRepository commentRepository;
-    private final MemberPointClient memberPointClient;
-    private final PointRewardRetryQueueRepository retryQueueRepository;
+    private final OutboxEventCreator outboxEventCreator;
     private final TransactionTemplate txTemplate;
 
     @Override
     public CommentResponse createComment(Long battleId, Long memberId, CommentCreateRequest request) {
-        // 1) 검증 + 댓글 저장은 트랜잭션 안에서 (외부 REST 호출 제외)
+        // 댓글 저장 + 보상 이벤트를 한 트랜잭션에서 처리
         Comment comment = txTemplate.execute(status -> {
             findBattleForActivity(battleId);
 
@@ -49,49 +45,22 @@ public class CommentServiceImpl implements CommentService {
                 throw new CustomException(ErrorCode.BATTLE_COMMENT_TOO_LONG);
             }
 
-            return commentRepository.save(Comment.builder()
+            Comment saved = commentRepository.save(Comment.builder()
                     .battleId(battleId)
                     .memberId(memberId)
                     .content(request.getContent())
                     .build());
+
+            // 보상 이벤트 outbox INSERT (같은 트랜잭션)
+            outboxEventCreator.createRewardEvent(
+                    battleId, memberId, "EARN_COMMENT", COMMENT_REWARD,
+                    "Battle 댓글 작성 보상",
+                    "battle:comment:battle:" + battleId + ":member:" + memberId);
+
+            return saved;
         });
 
-        // 2) 보상 지급은 트랜잭션 커밋 후 (외부 REST 호출은 트랜잭션 밖)
-        earnCommentReward(battleId, memberId, comment.getId());
-
         return CommentResponse.from(comment);
-    }
-
-    private void earnCommentReward(Long battleId, Long memberId, Long commentId) {
-        String idempotencyKey = "battle:comment:battle:" + battleId + ":member:" + memberId;
-        try {
-            memberPointClient.earnPoint(PointEarnRequest.builder()
-                    .memberId(memberId)
-                    .type("EARN_COMMENT")
-                    .referenceType("BATTLE")
-                    .referenceId(battleId)
-                    .amount(COMMENT_REWARD)
-                    .reason("Battle 댓글 작성 보상")
-                    .idempotencyKey(idempotencyKey)
-                    .build());
-        } catch (CustomException e) {
-            if (e.getErrorCode() == ErrorCode.EXTERNAL_SERVICE_TIMEOUT) {
-                if (!retryQueueRepository.existsByIdempotencyKey(idempotencyKey)) {
-                    retryQueueRepository.save(PointRewardRetryQueue.builder()
-                            .memberId(memberId)
-                            .referenceType("BATTLE")
-                            .referenceId(battleId)
-                            .type("EARN_COMMENT")
-                            .amount(COMMENT_REWARD)
-                            .reason("Battle 댓글 작성 보상")
-                            .idempotencyKey(idempotencyKey)
-                            .build());
-                }
-                log.warn("Comment reward enqueued for retry: member={}, comment={}", memberId, commentId);
-            } else {
-                log.warn("Comment reward failed (4xx), manual correction needed: member={}, comment={}", memberId, commentId);
-            }
-        }
     }
 
     @Override

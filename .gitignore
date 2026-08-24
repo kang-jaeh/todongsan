@@ -79,6 +79,7 @@ surefire-reports/
 # =========================
 CLAUDE.md
 plan.md
+docs/IMPROVEMENTS.md
 
 # =========================
 # Local Config
@@ -90,3 +91,8 @@ application-local.properties
 !application-prod.yml
 application-prod.yaml
 application-prod.properties
+
+# =========================
+# Integration Test Config
+# =========================
+application-integration.yml

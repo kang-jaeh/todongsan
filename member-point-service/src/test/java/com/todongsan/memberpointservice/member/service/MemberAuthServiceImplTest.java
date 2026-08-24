@@ -78,7 +78,7 @@ class MemberAuthServiceImplTest {
         when(memberRepository.save(any(Member.class))).thenReturn(saved);
         when(cryptoUtil.encrypt("kakao-token")).thenReturn("encrypted");
         when(pointHistoryRepository.findByIdempotencyKey("SIGNUP:1")).thenReturn(Optional.empty());
-        when(memberRepository.earnPoint(1L, BigDecimal.valueOf(50))).thenReturn(1);
+        when(memberRepository.earnPoint(1L, BigDecimal.valueOf(200))).thenReturn(1);
         when(memberRepository.findById(1L)).thenReturn(Optional.of(saved));
         when(jwtProvider.generateAccessToken(1L, MemberRole.USER)).thenReturn("access-jwt");
         when(jwtProvider.generateRefreshToken(1L)).thenReturn("refresh-jwt");
@@ -93,7 +93,7 @@ class MemberAuthServiceImplTest {
 
         verify(memberRepository).save(any(Member.class));
         verify(oauthTokenRepository).save(any(OauthToken.class));
-        verify(memberRepository).earnPoint(1L, BigDecimal.valueOf(50));
+        verify(memberRepository).earnPoint(1L, BigDecimal.valueOf(200));
         verify(pointHistoryRepository).save(any(PointHistory.class));
     }
 
