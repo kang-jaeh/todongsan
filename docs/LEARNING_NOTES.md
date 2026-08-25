@@ -124,3 +124,20 @@ Phase별로 "이 작업으로 답할 수 있게 된 면접 질문"과 모범 답
 
 **깊이 질문 대비:**
 - "DLT에 메시지가 들어오면 어떻게 아나?" → DLT 유입 수 메트릭 + Grafana 알림 규칙 설정 (Phase 3 이후 확장)
+
+---
+
+## Phase 4: Gateway 보안
+
+### Q13. Gateway에서 헤더 위조를 어떻게 방어했는가?
+
+**답변 뼈대:**
+- 문제: Gateway가 JWT 검증 후 X-Member-Id/X-Member-Role 헤더를 설정하는데,
+  공개 경로(JWT 검증 없이 통과하는 경로)에서는 클라이언트가 보낸 헤더가 그대로 전달됨
+- 해결: SecurityHeaderFilter(order=-10)가 JwtAuthenticationFilter(order=-1)보다 **먼저** 실행되어
+  모든 요청에서 X-Member-Id/X-Member-Role을 제거. JWT 인증 경로에서만 검증된 값으로 재설정
+- /internal/** 경로도 명시적 403 차단. 라우트에 없어도 방어적으로 차단해야 실수를 방지
+
+**깊이 질문 대비:**
+- "왜 JwtAuthenticationFilter에서 remove하면 안 되나?" → 공개 경로는 JWT 필터를 통과하지 않으므로,
+  JWT 필터보다 먼저 실행되는 별도 필터에서 제거해야 모든 경로를 커버할 수 있다
