@@ -9,7 +9,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 @SpringBootApplication
 @EnableFeignClients
 @EnableScheduling
-@MapperScan("com.todongsan.marketservice.market.repository")
+@MapperScan({"com.todongsan.marketservice.market.repository", "com.todongsan.marketservice.outbox"})
 public class MarketServiceApplication {
 
     public static void main(String[] args) {

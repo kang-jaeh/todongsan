@@ -259,3 +259,26 @@ CREATE TABLE market_refund_detail (
         FOREIGN KEY (prediction_id)
         REFERENCES market_prediction(id)
 );
+
+DROP TABLE IF EXISTS processed_event;
+DROP TABLE IF EXISTS outbox_event;
+
+CREATE TABLE outbox_event (
+    id BIGINT NOT NULL AUTO_INCREMENT,
+    aggregate_type VARCHAR(50) NOT NULL,
+    aggregate_id BIGINT NOT NULL,
+    event_type VARCHAR(100) NOT NULL,
+    event_id VARCHAR(36) NOT NULL,
+    payload TEXT NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    published_at DATETIME,
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_outbox_event_id (event_id)
+);
+
+CREATE TABLE processed_event (
+    event_id VARCHAR(36) NOT NULL,
+    processed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (event_id)
+);

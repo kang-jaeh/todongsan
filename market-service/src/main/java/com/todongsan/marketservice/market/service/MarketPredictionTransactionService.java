@@ -14,6 +14,7 @@ import com.todongsan.marketservice.market.repository.MarketMapper;
 import com.todongsan.marketservice.market.type.MarketStatus;
 import com.todongsan.marketservice.market.type.PredictionStatus;
 import com.todongsan.marketservice.market.type.PriceHistoryEventType;
+import com.todongsan.marketservice.outbox.OutboxEventCreator;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDateTime;
@@ -67,6 +68,25 @@ public class MarketPredictionTransactionService {
         prediction.setCreatedAt(now);
         prediction.setUpdatedAt(now);
         marketMapper.insertPrediction(prediction);
+        return prediction;
+    }
+
+    /**
+     * POINT_PENDING prediction 생성 + prediction.created outbox INSERT를 같은 트랜잭션에서 수행.
+     * Saga Choreography: outbox 이벤트가 폴링 퍼블리셔를 통해 Kafka로 발행된다.
+     */
+    @Transactional
+    public MarketPrediction createPendingPredictionWithOutbox(
+            long marketId,
+            long memberId,
+            String idempotencyKey,
+            CreatePredictionRequest request,
+            OutboxEventCreator outboxEventCreator
+    ) {
+        MarketPrediction prediction = createPendingPrediction(marketId, memberId, idempotencyKey, request);
+        outboxEventCreator.createPredictionCreatedEvent(
+                marketId, memberId, prediction.getId(),
+                prediction.getPointAmount(), prediction.getPointSpendIdempotencyKey());
         return prediction;
     }
 

@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<mapper namespace="com.todongsan.marketservice.outbox.OutboxMapper">
+
+    <insert id="insertOutboxEvent" parameterType="com.todongsan.marketservice.outbox.OutboxEvent">
+        INSERT INTO outbox_event (aggregate_type, aggregate_id, event_type, event_id, payload, status, created_at)
+        VALUES (#{aggregateType}, #{aggregateId}, #{eventType}, #{eventId}, #{payload}, 'PENDING', NOW())
+    </insert>
+
+    <select id="selectPendingEvents" resultType="com.todongsan.marketservice.outbox.OutboxEvent">
+        SELECT id, aggregate_type, aggregate_id, event_type, event_id, payload, status, created_at, published_at
+        FROM outbox_event
+        WHERE status = 'PENDING'
+        ORDER BY created_at ASC
+    </select>
+
+    <update id="markPublished">
+        UPDATE outbox_event SET status = 'PUBLISHED', published_at = #{publishedAt} WHERE id = #{id}
+    </update>
+
+    <!-- Inbox -->
+    <select id="existsProcessedEvent" resultType="boolean">
+        SELECT COUNT(*) > 0 FROM processed_event WHERE event_id = #{eventId}
+    </select>
+
+    <insert id="insertProcessedEvent">
+        INSERT INTO processed_event (event_id, processed_at) VALUES (#{eventId}, #{processedAt})
+    </insert>
+
+</mapper>

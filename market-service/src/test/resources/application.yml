@@ -20,6 +20,13 @@ client:
     connect-timeout-millis: 3000
     read-timeout-millis: 5000
 
+spring.kafka:
+  bootstrap-servers: localhost:9092
+  producer:
+    key-serializer: org.apache.kafka.common.serialization.StringSerializer
+    value-serializer: org.apache.kafka.common.serialization.StringSerializer
+spring.autoconfigure.exclude: org.springframework.boot.autoconfigure.kafka.KafkaAutoConfiguration
+
 market:
   scheduler:
     prediction-reconciliation:
