@@ -14,6 +14,12 @@ services:
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
+      - --server-id=1
+      - --log-bin=mysql-bin
+      - --binlog-format=ROW
+      - --binlog-row-image=FULL
+      - --gtid-mode=ON
+      - --enforce-gtid-consistency=ON
 
     volumes:
       - todongsan_mysql_data:/var/lib/mysql
@@ -76,6 +82,34 @@ services:
 
     depends_on:
       - kafka
+
+    networks:
+      - todongsan-network
+
+  # ── Kafka Connect + Debezium (CDC) ────────────────────────
+  # Outbox 폴링 퍼블리셔를 대체. MySQL binlog를 읽어 outbox_event INSERT를 Kafka로 실시간 전달.
+  # 폴링 방식 대비: 발행 지연 수초 → 수백ms, DB SELECT 부하 제거.
+  kafka-connect:
+    image: debezium/connect:3.0.0.Final
+    container_name: todongsan-kafka-connect
+    restart: unless-stopped
+
+    ports:
+      - "127.0.0.1:8083:8083"
+
+    environment:
+      BOOTSTRAP_SERVERS: kafka:29092
+      GROUP_ID: todongsan-connect
+      CONFIG_STORAGE_TOPIC: _connect-configs
+      OFFSET_STORAGE_TOPIC: _connect-offsets
+      STATUS_STORAGE_TOPIC: _connect-status
+      CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      STATUS_STORAGE_REPLICATION_FACTOR: 1
+
+    depends_on:
+      - kafka
+      - mysql
 
     networks:
       - todongsan-network
