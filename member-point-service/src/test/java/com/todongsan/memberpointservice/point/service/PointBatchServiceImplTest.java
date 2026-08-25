@@ -2,29 +2,26 @@ package com.todongsan.memberpointservice.point.service;
 
 import com.todongsan.memberpointservice.global.exception.CustomException;
 import com.todongsan.memberpointservice.global.exception.ErrorCode;
-import com.todongsan.memberpointservice.global.util.RequestHashUtil;
-import com.todongsan.memberpointservice.member.entity.Member;
 import com.todongsan.memberpointservice.member.repository.MemberRepository;
 import com.todongsan.memberpointservice.point.dto.request.RefundItem;
 import com.todongsan.memberpointservice.point.dto.request.RefundRequest;
 import com.todongsan.memberpointservice.point.dto.request.SettlementItem;
 import com.todongsan.memberpointservice.point.dto.request.SettlementRequest;
+import com.todongsan.memberpointservice.point.dto.response.BatchItemResult;
 import com.todongsan.memberpointservice.point.dto.response.RefundResponse;
 import com.todongsan.memberpointservice.point.dto.response.SettlementResponse;
-import com.todongsan.memberpointservice.point.entity.PointHistory;
 import com.todongsan.memberpointservice.point.entity.PointHistoryType;
-import com.todongsan.memberpointservice.point.entity.PointReferenceType;
-import com.todongsan.memberpointservice.point.entity.PointTransactionStatus;
 import com.todongsan.memberpointservice.point.repository.PointHistoryRepository;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.SimpleTransactionStatus;
 
 import java.math.BigDecimal;
 import java.util.List;
-import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -32,274 +29,160 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
+/**
+ * settle/refund 배치의 트랜잭션 경계 테스트.
+ *
+ * Phase 2.5: 각 item이 독립 트랜잭션(REQUIRES_NEW)으로 처리되므로,
+ * settle/refund는 BatchItemProcessor에 위임만 하고,
+ * 한 항목 실패가 다른 항목에 영향을 주지 않는다.
+ */
 @ExtendWith(MockitoExtension.class)
 class PointBatchServiceImplTest {
 
     @Mock MemberRepository memberRepository;
     @Mock PointHistoryRepository pointHistoryRepository;
-    @InjectMocks PointInternalServiceImpl service;
+    @Mock BatchItemProcessor batchItemProcessor;
+    @Mock PlatformTransactionManager transactionManager;
+
+    PointInternalServiceImpl service;
 
     private static final String SETTLEMENT_ID = "settle-market-7-20260528";
     private static final String REFUND_ID = "refund-market-7-20260528";
-    private static final Long MEMBER_ID = 1L;
-    private static final Long PREDICTION_ID = 1001L;
-    private static final BigDecimal AMOUNT = new BigDecimal("190.00");
-    private static final String ITEM_KEY = "MARKET_SETTLEMENT_REWARD:market:7:prediction:1001:member:1";
 
-    private Member createMember() {
-        return Member.builder()
-                .nickname("테스트유저")
-                .email("test@kakao.com")
-                .oauthProvider("KAKAO")
-                .oauthId("kakao-test")
-                .build();
-    }
+    @BeforeEach
+    void setUp() {
+        lenient().when(transactionManager.getTransaction(any()))
+                .thenReturn(new SimpleTransactionStatus());
+        lenient().doNothing().when(transactionManager).commit(any());
+        lenient().doNothing().when(transactionManager).rollback(any());
+        lenient().when(pointHistoryRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        lenient().when(pointHistoryRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
 
-    private SettlementItem createSettlementItem() {
-        SettlementItem item = mock(SettlementItem.class);
-        lenient().when(item.getPredictionId()).thenReturn(PREDICTION_ID);
-        lenient().when(item.getMemberId()).thenReturn(MEMBER_ID);
-        lenient().when(item.getAmount()).thenReturn(AMOUNT);
-        lenient().when(item.getReferenceType()).thenReturn("MARKET_PREDICTION");
-        lenient().when(item.getReferenceId()).thenReturn(PREDICTION_ID);
-        lenient().when(item.getReason()).thenReturn("Market 정산 보상");
-        lenient().when(item.getIdempotencyKey()).thenReturn(ITEM_KEY);
-        return item;
-    }
-
-    private SettlementRequest createSettlementRequest(List<SettlementItem> items) {
-        SettlementRequest req = mock(SettlementRequest.class);
-        when(req.getSettlementId()).thenReturn(SETTLEMENT_ID);
-        lenient().when(req.getMarketId()).thenReturn(7L);
-        when(req.getItems()).thenReturn(items);
-        return req;
-    }
-
-    private PointHistory createSettlementHistory(String requestHash) {
-        return PointHistory.builder()
-                .memberId(MEMBER_ID)
-                .type(PointHistoryType.SETTLE_MARKET)
-                .amount(AMOUNT)
-                .balanceSnapshot(new BigDecimal("340.00"))
-                .reason("Market 정산 보상")
-                .referenceType(PointReferenceType.MARKET_PREDICTION)
-                .referenceId(PREDICTION_ID)
-                .idempotencyKey(ITEM_KEY)
-                .requestHash(requestHash)
-                .status(PointTransactionStatus.SUCCEEDED)
-                .build();
+        service = new PointInternalServiceImpl(
+                memberRepository, pointHistoryRepository, batchItemProcessor, transactionManager);
     }
 
     // ─── settle ───────────────────────────────────────────────
 
     @Test
-    void settle_정상_처리() {
-        Member member = createMember();
-        SettlementItem item = createSettlementItem();
-        SettlementRequest request = createSettlementRequest(List.of(item));
+    void settle_각_항목을_batchItemProcessor에_위임() {
+        SettlementItem item1 = mockSettleItem(1L, 1001L, "key-1");
+        SettlementItem item2 = mockSettleItem(2L, 1002L, "key-2");
+        SettlementRequest request = mockSettleRequest(List.of(item1, item2));
 
-        when(pointHistoryRepository.findByIdempotencyKey(ITEM_KEY)).thenReturn(Optional.empty());
-        when(memberRepository.findById(MEMBER_ID)).thenReturn(Optional.of(member));
-        when(memberRepository.earnPoint(eq(MEMBER_ID), any())).thenReturn(1);
-
-        SettlementResponse response = service.settle(SETTLEMENT_ID, request);
-
-        assertThat(response.getResults()).hasSize(1);
-        assertThat(response.getResults().get(0).getStatus()).isEqualTo("PROCESSED");
-        assertThat(response.getResults().get(0).getMemberId()).isEqualTo(MEMBER_ID);
-    }
-
-    @Test
-    void settle_멱등성_ALREADY_PROCESSED() {
-        String hash = RequestHashUtil.compute(MEMBER_ID, "SETTLE_MARKET", AMOUNT, "MARKET_PREDICTION", PREDICTION_ID);
-        SettlementItem item = createSettlementItem();
-        SettlementRequest request = createSettlementRequest(List.of(item));
-
-        when(pointHistoryRepository.findByIdempotencyKey(ITEM_KEY))
-                .thenReturn(Optional.of(createSettlementHistory(hash)));
-
-        SettlementResponse response = service.settle(SETTLEMENT_ID, request);
-
-        assertThat(response.getResults().get(0).getStatus()).isEqualTo("ALREADY_PROCESSED");
-        assertThat(response.getResults().get(0).getMemberId()).isEqualTo(MEMBER_ID);
-    }
-
-    @Test
-    void settle_멱등성_KEY_CONFLICT() {
-        SettlementItem item = createSettlementItem();
-        SettlementRequest request = createSettlementRequest(List.of(item));
-
-        when(pointHistoryRepository.findByIdempotencyKey(ITEM_KEY))
-                .thenReturn(Optional.of(createSettlementHistory("different-hash")));
-
-        SettlementResponse response = service.settle(SETTLEMENT_ID, request);
-
-        assertThat(response.getResults().get(0).getStatus()).isEqualTo("FAILED");
-        assertThat(response.getResults().get(0).getErrorCode()).isEqualTo("IDEMPOTENCY_KEY_CONFLICT");
-    }
-
-    @Test
-    void settle_부분_실패_MEMBER_NOT_FOUND() {
-        Member member = createMember();
-        SettlementItem item1 = createSettlementItem();
-
-        SettlementItem item2 = mock(SettlementItem.class);
-        lenient().when(item2.getPredictionId()).thenReturn(1002L);
-        lenient().when(item2.getMemberId()).thenReturn(999L);
-        lenient().when(item2.getAmount()).thenReturn(AMOUNT);
-        lenient().when(item2.getReferenceType()).thenReturn("MARKET_PREDICTION");
-        lenient().when(item2.getReferenceId()).thenReturn(1002L);
-        lenient().when(item2.getIdempotencyKey()).thenReturn("key-item2");
-
-        SettlementRequest request = createSettlementRequest(List.of(item1, item2));
-
-        when(pointHistoryRepository.findByIdempotencyKey(ITEM_KEY)).thenReturn(Optional.empty());
-        when(pointHistoryRepository.findByIdempotencyKey("key-item2")).thenReturn(Optional.empty());
-        when(memberRepository.findById(MEMBER_ID)).thenReturn(Optional.of(member));
-        when(memberRepository.findById(999L)).thenReturn(Optional.empty());
-        when(memberRepository.earnPoint(eq(MEMBER_ID), any())).thenReturn(1);
+        when(batchItemProcessor.processItem(eq(1001L), eq(1L), any(), any(), any(), any(), eq("key-1"), eq(PointHistoryType.SETTLE_MARKET)))
+                .thenReturn(BatchItemResult.builder().predictionId(1001L).memberId(1L).status("PROCESSED").build());
+        when(batchItemProcessor.processItem(eq(1002L), eq(2L), any(), any(), any(), any(), eq("key-2"), eq(PointHistoryType.SETTLE_MARKET)))
+                .thenReturn(BatchItemResult.builder().predictionId(1002L).memberId(2L).status("PROCESSED").build());
 
         SettlementResponse response = service.settle(SETTLEMENT_ID, request);
 
         assertThat(response.getResults()).hasSize(2);
         assertThat(response.getResults().get(0).getStatus()).isEqualTo("PROCESSED");
-        assertThat(response.getResults().get(1).getStatus()).isEqualTo("FAILED");
-        assertThat(response.getResults().get(1).getErrorCode()).isEqualTo("MEMBER_NOT_FOUND");
+        assertThat(response.getResults().get(1).getStatus()).isEqualTo("PROCESSED");
+        verify(batchItemProcessor, times(2)).processItem(any(), any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
-    void settle_Header_body_불일치_예외() {
-        SettlementRequest request = mock(SettlementRequest.class);
-        when(request.getSettlementId()).thenReturn(SETTLEMENT_ID);
+    void settle_한_항목_실패해도_나머지_정상_처리_부분_성공() {
+        SettlementItem item1 = mockSettleItem(1L, 1001L, "key-1");
+        SettlementItem item2 = mockSettleItem(2L, 1002L, "key-2");
+        SettlementItem item3 = mockSettleItem(3L, 1003L, "key-3");
+        SettlementRequest request = mockSettleRequest(List.of(item1, item2, item3));
 
-        assertThatThrownBy(() -> service.settle("wrong-key", request))
+        when(batchItemProcessor.processItem(eq(1001L), any(), any(), any(), any(), any(), eq("key-1"), any()))
+                .thenReturn(BatchItemResult.builder().predictionId(1001L).memberId(1L).status("PROCESSED").build());
+        when(batchItemProcessor.processItem(eq(1002L), any(), any(), any(), any(), any(), eq("key-2"), any()))
+                .thenReturn(BatchItemResult.builder().predictionId(1002L).memberId(2L).status("FAILED").errorCode("MEMBER_NOT_FOUND").build());
+        when(batchItemProcessor.processItem(eq(1003L), any(), any(), any(), any(), any(), eq("key-3"), any()))
+                .thenReturn(BatchItemResult.builder().predictionId(1003L).memberId(3L).status("PROCESSED").build());
+
+        SettlementResponse response = service.settle(SETTLEMENT_ID, request);
+
+        assertThat(response.getResults()).hasSize(3);
+        assertThat(response.getResults().get(0).getStatus()).isEqualTo("PROCESSED");
+        assertThat(response.getResults().get(1).getStatus()).isEqualTo("FAILED");
+        assertThat(response.getResults().get(2).getStatus()).isEqualTo("PROCESSED");
+    }
+
+    @Test
+    void settle_idempotencyKey_불일치_예외() {
+        SettlementRequest request = mockSettleRequest(List.of());
+        when(request.getSettlementId()).thenReturn("different-id");
+
+        assertThatThrownBy(() -> service.settle(SETTLEMENT_ID, request))
                 .isInstanceOf(CustomException.class)
                 .hasFieldOrPropertyWithValue("errorCode", ErrorCode.INVALID_REQUEST);
     }
 
-    @Test
-    void settle_키_없으면_예외() {
-        SettlementRequest request = mock(SettlementRequest.class);
-
-        assertThatThrownBy(() -> service.settle(null, request))
-                .isInstanceOf(CustomException.class)
-                .hasFieldOrPropertyWithValue("errorCode", ErrorCode.IDEMPOTENCY_KEY_REQUIRED);
-    }
+    // ─── refund ───────────────────────────────────────────────
 
     @Test
-    void settle_referenceType_null이면_허용() {
-        Member member = createMember();
-        SettlementItem item = mock(SettlementItem.class);
-        lenient().when(item.getPredictionId()).thenReturn(PREDICTION_ID);
-        lenient().when(item.getMemberId()).thenReturn(MEMBER_ID);
-        lenient().when(item.getAmount()).thenReturn(AMOUNT);
-        lenient().when(item.getReferenceType()).thenReturn(null);
-        lenient().when(item.getReferenceId()).thenReturn(null);
-        lenient().when(item.getReason()).thenReturn("Market 정산 보상");
-        lenient().when(item.getIdempotencyKey()).thenReturn(ITEM_KEY);
+    void refund_각_항목을_batchItemProcessor에_위임() {
+        RefundItem item = mockRefundItem(1L, 1001L, "refund-key-1", "MARKET_PREDICTION");
+        RefundRequest request = mockRefundRequest(List.of(item));
 
-        SettlementRequest request = createSettlementRequest(List.of(item));
+        when(batchItemProcessor.processItem(eq(1001L), eq(1L), any(), any(), any(), any(), eq("refund-key-1"), eq(PointHistoryType.REFUND_MARKET)))
+                .thenReturn(BatchItemResult.builder().predictionId(1001L).memberId(1L).status("PROCESSED").build());
 
-        when(pointHistoryRepository.findByIdempotencyKey(ITEM_KEY)).thenReturn(Optional.empty());
-        when(memberRepository.findById(MEMBER_ID)).thenReturn(Optional.of(member));
-        when(memberRepository.earnPoint(eq(MEMBER_ID), any())).thenReturn(1);
-
-        SettlementResponse response = service.settle(SETTLEMENT_ID, request);
+        RefundResponse response = service.refund(REFUND_ID, request);
 
         assertThat(response.getResults()).hasSize(1);
         assertThat(response.getResults().get(0).getStatus()).isEqualTo("PROCESSED");
     }
 
     @Test
-    void settle_item_키_없으면_예외() {
-        SettlementItem item = mock(SettlementItem.class);
-        when(item.getIdempotencyKey()).thenReturn(null);
+    void refund_INSIGHT_REPORT_타입_구분() {
+        RefundItem item = mockRefundItem(1L, 1001L, "refund-key-1", "INSIGHT_REPORT");
+        RefundRequest request = mockRefundRequest(List.of(item));
 
-        SettlementRequest request = mock(SettlementRequest.class);
-        when(request.getSettlementId()).thenReturn(SETTLEMENT_ID);
-        when(request.getItems()).thenReturn(List.of(item));
+        when(batchItemProcessor.processItem(any(), any(), any(), any(), any(), any(), any(), eq(PointHistoryType.REFUND_INSIGHT)))
+                .thenReturn(BatchItemResult.builder().predictionId(1001L).memberId(1L).status("PROCESSED").build());
 
-        assertThatThrownBy(() -> service.settle(SETTLEMENT_ID, request))
-                .isInstanceOf(CustomException.class)
-                .hasFieldOrPropertyWithValue("errorCode", ErrorCode.IDEMPOTENCY_KEY_REQUIRED);
+        service.refund(REFUND_ID, request);
+
+        verify(batchItemProcessor).processItem(any(), any(), any(), any(), any(), any(), any(), eq(PointHistoryType.REFUND_INSIGHT));
     }
 
-    // ─── refund ───────────────────────────────────────────────
+    // ─── helpers ──────────────────────────────────────────────
 
-    private RefundItem createRefundItem(String refType, String itemKey) {
-        RefundItem item = mock(RefundItem.class);
-        lenient().when(item.getPredictionId()).thenReturn(PREDICTION_ID);
-        lenient().when(item.getMemberId()).thenReturn(MEMBER_ID);
+    private SettlementItem mockSettleItem(Long memberId, Long predictionId, String key) {
+        SettlementItem item = mock(SettlementItem.class);
+        lenient().when(item.getPredictionId()).thenReturn(predictionId);
+        lenient().when(item.getMemberId()).thenReturn(memberId);
         lenient().when(item.getAmount()).thenReturn(new BigDecimal("100.00"));
-        lenient().when(item.getReferenceType()).thenReturn(refType);
-        lenient().when(item.getReferenceId()).thenReturn(PREDICTION_ID);
-        lenient().when(item.getReason()).thenReturn("환불");
-        lenient().when(item.getIdempotencyKey()).thenReturn(itemKey);
+        lenient().when(item.getReferenceType()).thenReturn("MARKET_PREDICTION");
+        lenient().when(item.getReferenceId()).thenReturn(predictionId);
+        lenient().when(item.getReason()).thenReturn("정산");
+        lenient().when(item.getIdempotencyKey()).thenReturn(key);
         return item;
     }
 
-    private RefundRequest createRefundRequest(List<RefundItem> items) {
+    private SettlementRequest mockSettleRequest(List<SettlementItem> items) {
+        SettlementRequest req = mock(SettlementRequest.class);
+        lenient().when(req.getSettlementId()).thenReturn(SETTLEMENT_ID);
+        lenient().when(req.getMarketId()).thenReturn(7L);
+        lenient().when(req.getItems()).thenReturn(items);
+        return req;
+    }
+
+    private RefundItem mockRefundItem(Long memberId, Long predictionId, String key, String refType) {
+        RefundItem item = mock(RefundItem.class);
+        lenient().when(item.getPredictionId()).thenReturn(predictionId);
+        lenient().when(item.getMemberId()).thenReturn(memberId);
+        lenient().when(item.getAmount()).thenReturn(new BigDecimal("100.00"));
+        lenient().when(item.getReferenceType()).thenReturn(refType);
+        lenient().when(item.getReferenceId()).thenReturn(predictionId);
+        lenient().when(item.getReason()).thenReturn("환불");
+        lenient().when(item.getIdempotencyKey()).thenReturn(key);
+        return item;
+    }
+
+    private RefundRequest mockRefundRequest(List<RefundItem> items) {
         RefundRequest req = mock(RefundRequest.class);
         when(req.getRefundId()).thenReturn(REFUND_ID);
         lenient().when(req.getMarketId()).thenReturn(7L);
         when(req.getItems()).thenReturn(items);
         return req;
-    }
-
-    @Test
-    void refund_정상_처리_Market() {
-        Member member = createMember();
-        RefundItem item = createRefundItem("MARKET_PREDICTION", "refund-key-1");
-        RefundRequest request = createRefundRequest(List.of(item));
-
-        when(pointHistoryRepository.findByIdempotencyKey("refund-key-1")).thenReturn(Optional.empty());
-        when(memberRepository.findById(MEMBER_ID)).thenReturn(Optional.of(member));
-        when(memberRepository.earnPoint(eq(MEMBER_ID), any())).thenReturn(1);
-
-        RefundResponse response = service.refund(REFUND_ID, request);
-
-        assertThat(response.getResults().get(0).getStatus()).isEqualTo("PROCESSED");
-        assertThat(response.getResults().get(0).getMemberId()).isEqualTo(MEMBER_ID);
-    }
-
-    @Test
-    void refund_정상_처리_Insight() {
-        Member member = createMember();
-        RefundItem item = createRefundItem("INSIGHT_REPORT", "insight-refund-key-1");
-        RefundRequest request = createRefundRequest(List.of(item));
-
-        when(pointHistoryRepository.findByIdempotencyKey("insight-refund-key-1")).thenReturn(Optional.empty());
-        when(memberRepository.findById(MEMBER_ID)).thenReturn(Optional.of(member));
-        when(memberRepository.earnPoint(eq(MEMBER_ID), any())).thenReturn(1);
-
-        RefundResponse response = service.refund(REFUND_ID, request);
-
-        assertThat(response.getResults().get(0).getStatus()).isEqualTo("PROCESSED");
-        assertThat(response.getResults().get(0).getMemberId()).isEqualTo(MEMBER_ID);
-    }
-
-    @Test
-    void refund_referenceType_null이면_허용() {
-        Member member = createMember();
-        RefundItem item = createRefundItem(null, "refund-key-null-ref");
-        RefundRequest request = createRefundRequest(List.of(item));
-
-        when(pointHistoryRepository.findByIdempotencyKey("refund-key-null-ref")).thenReturn(Optional.empty());
-        when(memberRepository.findById(MEMBER_ID)).thenReturn(Optional.of(member));
-        when(memberRepository.earnPoint(eq(MEMBER_ID), any())).thenReturn(1);
-
-        RefundResponse response = service.refund(REFUND_ID, request);
-
-        assertThat(response.getResults().get(0).getStatus()).isEqualTo("PROCESSED");
-    }
-
-    @Test
-    void refund_Header_body_불일치_예외() {
-        RefundRequest request = mock(RefundRequest.class);
-        when(request.getRefundId()).thenReturn(REFUND_ID);
-
-        assertThatThrownBy(() -> service.refund("wrong-key", request))
-                .isInstanceOf(CustomException.class)
-                .hasFieldOrPropertyWithValue("errorCode", ErrorCode.INVALID_REQUEST);
     }
 }
