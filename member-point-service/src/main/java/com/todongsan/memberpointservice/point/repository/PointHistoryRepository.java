@@ -8,6 +8,8 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.math.BigDecimal;
+import java.util.List;
 import java.util.Optional;
 
 public interface PointHistoryRepository extends JpaRepository<PointHistory, Long> {
@@ -43,4 +45,20 @@ public interface PointHistoryRepository extends JpaRepository<PointHistory, Long
             @Param("memberId") Long memberId,
             @Param("typePrefix") String typePrefix,
             Pageable pageable);
+
+    // 정합성 대사: 타입+상태별 금액 합계
+    @Query(value = "SELECT COALESCE(SUM(amount), 0) FROM point_history " +
+            "WHERE type = :type AND status = 'SUCCEEDED' AND reference_type = :refType AND reference_id = :refId",
+            nativeQuery = true)
+    BigDecimal sumAmountByTypeAndReference(
+            @Param("type") String type,
+            @Param("refType") String refType,
+            @Param("refId") Long refId);
+
+    // 정합성 대사: 특정 마켓의 SPEND_MARKET 성공 합
+    @Query(value = "SELECT COALESCE(SUM(amount), 0) FROM point_history " +
+            "WHERE type = 'SPEND_MARKET' AND status = 'SUCCEEDED' AND reference_type = 'MARKET_PREDICTION' " +
+            "AND reference_id IN (SELECT id FROM point_history WHERE 1=0)", // placeholder
+            nativeQuery = true)
+    BigDecimal sumSpendMarketByReferenceIds(@Param("ids") List<Long> predictionIds);
 }

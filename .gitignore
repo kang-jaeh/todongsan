@@ -80,6 +80,10 @@ surefire-reports/
 CLAUDE.md
 plan.md
 docs/IMPROVEMENTS.md
+docs/LEARNING_NOTES.md
+docs/SAGA_DESIGN.md
+docs/CDC_COMPARISON.md
+docs/DLT_RUNBOOK.md
 
 # =========================
 # Local Config

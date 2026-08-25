@@ -1583,4 +1583,17 @@
         WHERE deleted_at IS NULL
     </select>
 
+    <!-- 정합성 대사: CONFIRMED 예측 금액 합 -->
+    <select id="sumConfirmedPredictionAmount" resultType="java.math.BigDecimal">
+        SELECT COALESCE(SUM(point_amount), 0)
+        FROM market_prediction
+        WHERE market_id = #{marketId} AND status = 'CONFIRMED'
+    </select>
+
+    <select id="sumRefundedPredictionAmount" resultType="java.math.BigDecimal">
+        SELECT COALESCE(SUM(point_amount), 0)
+        FROM market_prediction
+        WHERE market_id = #{marketId} AND status = 'REFUNDED'
+    </select>
+
 </mapper>

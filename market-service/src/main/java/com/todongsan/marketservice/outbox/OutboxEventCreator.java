@@ -106,4 +106,43 @@ public class OutboxEventCreator {
         outboxMapper.insertOutboxEvent(event);
         return eventId;
     }
+
+    /**
+     * market.voided 이벤트를 outbox에 저장한다.
+     * 마켓 무효화 시 CONFIRMED 전원 환불을 트리거한다.
+     */
+    public String createMarketVoidedEvent(Long marketId, Long marketVoidId, int refundCount) {
+        String eventId = UUID.randomUUID().toString();
+
+        Map<String, Object> envelope = new LinkedHashMap<>();
+        envelope.put("eventId", eventId);
+        envelope.put("eventType", "MARKET_VOIDED");
+        envelope.put("schemaVersion", 1);
+        envelope.put("occurredAt", LocalDateTime.now().toString());
+        envelope.put("aggregateType", "MARKET");
+        envelope.put("aggregateId", marketId);
+
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("marketId", marketId);
+        payload.put("marketVoidId", marketVoidId);
+        payload.put("refundCount", refundCount);
+        envelope.put("payload", payload);
+
+        String json;
+        try {
+            json = objectMapper.writeValueAsString(envelope);
+        } catch (JsonProcessingException e) {
+            throw new RuntimeException("Outbox 이벤트 직렬화 실패", e);
+        }
+
+        OutboxEvent event = new OutboxEvent();
+        event.setAggregateType("MARKET");
+        event.setAggregateId(marketId);
+        event.setEventType("MARKET_VOIDED");
+        event.setEventId(eventId);
+        event.setPayload(json);
+
+        outboxMapper.insertOutboxEvent(event);
+        return eventId;
+    }
 }
