@@ -33,6 +33,8 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.POST, "/api/v1/members/token/refresh").permitAll()
                         // 내부 연계 API (서비스 간 호출, JWT 없이 호출됨 — Gateway에 /internal/** 경로 없어 외부 접근 자동 차단)
                         .requestMatchers("/internal/**").permitAll()
+                        // Actuator (Prometheus, Health)
+                        .requestMatchers("/actuator/**").permitAll()
                         // Swagger
                         .requestMatchers("/swagger-ui.html", "/swagger-ui/**", "/v3/api-docs/**").permitAll()
                         // 나머지 외부 API는 JWT 인증 필수
