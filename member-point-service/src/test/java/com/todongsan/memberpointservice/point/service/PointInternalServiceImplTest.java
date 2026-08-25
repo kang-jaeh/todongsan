@@ -36,6 +36,7 @@ class PointInternalServiceImplTest {
 
     @Mock MemberRepository memberRepository;
     @Mock PointHistoryRepository pointHistoryRepository;
+    @Mock BatchItemProcessor batchItemProcessor;
     @Mock PlatformTransactionManager transactionManager;
 
     PointInternalServiceImpl service;
@@ -61,7 +62,7 @@ class PointInternalServiceImplTest {
         lenient().when(pointHistoryRepository.saveAndFlush(any(PointHistory.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
 
-        service = new PointInternalServiceImpl(memberRepository, pointHistoryRepository, transactionManager);
+        service = new PointInternalServiceImpl(memberRepository, pointHistoryRepository, batchItemProcessor, transactionManager);
     }
 
     private Member createMemberMock(BigDecimal balance) {
