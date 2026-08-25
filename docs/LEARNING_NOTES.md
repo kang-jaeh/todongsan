@@ -100,3 +100,27 @@ Phase별로 "이 작업으로 답할 수 있게 된 면접 질문"과 모범 답
 - 이유: Market이 "차감이 실패했다"는 사실을 알아야 FAILED로 전이할 수 있다. 이벤트가 없으면 Market은 영원히 POINT_PENDING에 머무름
 - 반면 기술 실패(DB 순단)는 이벤트를 발행하지 않는다. 재시도로 해결될 수 있으므로
 - 구분: "비즈니스 실패 = 확정적 결과 = 이벤트" vs "기술 실패 = 일시적 = 재시도"
+
+---
+
+## Phase 3: 관측성 (Observability)
+
+### Q11. MSA에서 분산 추적을 어떻게 구현했는가?
+
+**답변 뼈대:**
+- Micrometer Tracing + Brave + Zipkin Reporter 조합
+- Gateway → 서비스 → Kafka 컨슈머까지 traceId가 자동 전파됨
+- Kafka 헤더 전파: B3 propagation 포맷으로 Kafka 메시지에 traceId를 실어서 컨슈머에서 이어받음
+- Zipkin UI에서 한 요청의 전체 흐름을 시각화할 수 있음
+- 샘플링 비율: 로컬 1.0(전수), 프로덕션은 0.1~0.5 (성능 고려)
+
+### Q12. 어떤 메트릭을 모니터링하는가?
+
+**답변 뼈대:**
+- **인프라 메트릭**: JVM 힙, GC, 스레드 수, HikariCP 커넥션 풀 (Micrometer 자동 수집)
+- **도메인 메트릭**: point.spend.failed(잔액부족 카운터), point.idempotency.conflict, outbox 발행 지연
+- Prometheus가 15초 간격으로 각 서비스의 /actuator/prometheus 엔드포인트를 스크레이핑
+- Grafana 대시보드로 시각화
+
+**깊이 질문 대비:**
+- "DLT에 메시지가 들어오면 어떻게 아나?" → DLT 유입 수 메트릭 + Grafana 알림 규칙 설정 (Phase 3 이후 확장)

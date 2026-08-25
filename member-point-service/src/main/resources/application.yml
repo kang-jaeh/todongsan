@@ -48,6 +48,21 @@ spring.kafka:
   listener:
     ack-mode: manual                # AcknowledgingMessageListener로 수동 커밋
 
+# ── 관측성 ─────────────────────────────────────────────────
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus,info
+  tracing:
+    sampling:
+      probability: 1.0  # 로컬: 전수 샘플링. 프로덕션: 0.1~0.5
+    propagation:
+      type: b3           # Kafka 헤더 전파 호환
+  zipkin:
+    tracing:
+      endpoint: ${ZIPKIN_URL:http://localhost:9411/api/v2/spans}
+
 logging:
   level:
     com.todongsan.memberpointservice: DEBUG
