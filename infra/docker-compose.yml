@@ -80,9 +80,66 @@ services:
     networks:
       - todongsan-network
 
+  # ── Zipkin (분산 추적) ─────────────────────────────────────
+  zipkin:
+    image: openzipkin/zipkin:3
+    container_name: todongsan-zipkin
+    restart: unless-stopped
+
+    ports:
+      - "127.0.0.1:9411:9411"
+
+    networks:
+      - todongsan-network
+
+  # ── Prometheus (메트릭 수집) ──────────────────────────────
+  prometheus:
+    image: prom/prometheus:v3.4.1
+    container_name: todongsan-prometheus
+    restart: unless-stopped
+
+    ports:
+      - "127.0.0.1:9090:9090"
+
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - todongsan_prometheus_data:/prometheus
+
+    # 호스트의 서비스에 접근하기 위해 host.docker.internal 사용
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    networks:
+      - todongsan-network
+
+  # ── Grafana (대시보드) ────────────────────────────────────
+  grafana:
+    image: grafana/grafana:11.6.0
+    container_name: todongsan-grafana
+    restart: unless-stopped
+
+    ports:
+      - "127.0.0.1:3000:3000"
+
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+
+    volumes:
+      - todongsan_grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
+
+    depends_on:
+      - prometheus
+
+    networks:
+      - todongsan-network
+
 volumes:
   todongsan_mysql_data:
   todongsan_kafka_data:
+  todongsan_prometheus_data:
+  todongsan_grafana_data:
 
 networks:
   todongsan-network:
