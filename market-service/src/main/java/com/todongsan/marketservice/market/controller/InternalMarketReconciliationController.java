@@ -8,6 +8,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.math.BigDecimal;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -20,6 +21,15 @@ import java.util.Map;
 public class InternalMarketReconciliationController {
 
     private final MarketMapper marketMapper;
+
+    /**
+     * 정산 완료(SETTLED) 또는 무효(VOIDED) 마켓 ID 목록.
+     * 대사 배치가 교차 검증할 대상 마켓을 조회한다.
+     */
+    @GetMapping("/reconciliation-targets")
+    public List<Long> getReconciliationTargets() {
+        return marketMapper.selectSettledOrVoidedMarketIds();
+    }
 
     @GetMapping("/{marketId}/reconciliation-summary")
     public Map<String, Object> getReconciliationSummary(@PathVariable Long marketId) {

@@ -6,22 +6,26 @@ import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.ParameterizedTypeReference;
+import org.springframework.http.HttpMethod;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestTemplate;
 
 import java.math.BigDecimal;
+import java.util.List;
 import java.util.Map;
 
 /**
  * 서비스 간 정합성 대사 배치.
  *
- * 불변식 검증:
- * ① Market CONFIRMED 예측 금액 합 = point_history SPEND_MARKET SUCCEEDED 합 - REFUND_MARKET 합 (마켓별)
+ * 불변식 검증 2가지:
+ * ① 자기 원장: SPEND ≥ SETTLE + REFUND + BURN (분배 금액이 차감 금액을 초과할 수 없다)
+ * ② 교차 검증: Market CONFIRMED+REFUNDED 합 vs point_history SPEND_MARKET 합 (마켓별)
  *
  * Market 데이터는 internal API로 조회 (DB 직접 조인 금지 — DB per service 원칙).
- * 불일치 발견 시: 로그 + 메트릭 카운터 + reconciliation_mismatch 테이블 기록.
+ * Market 다운 시 교차 검증 스킵+로그 (대사는 안전망이므로 장애 전파 금지).
  */
 @Slf4j
 @Component
@@ -46,59 +50,102 @@ public class ReconciliationScheduler {
         this.marketServiceUrl = marketServiceUrl;
     }
 
-    /**
-     * 10분 간격으로 정합성 대사 실행.
-     * SETTLED 상태 마켓만 대상 (정산 완료된 마켓의 포인트 총량이 일치하는지 검증).
-     */
-    @Scheduled(fixedDelay = 600000) // 10분
+    @Scheduled(fixedDelay = 600000)
     public void reconcile() {
         try {
-            reconcileSettledMarkets();
+            checkSelfLedgerInvariant();
+            checkCrossServiceInvariant();
         } catch (Exception e) {
             log.error("Reconciliation scheduler failed", e);
         }
     }
 
     /**
-     * 마켓별 불변식 검증:
-     * Market CONFIRMED 금액 합 = point_history SPEND_MARKET 성공 합 - REFUND_MARKET 합
+     * ① 자기 원장 불변식: SPEND ≥ SETTLE + REFUND + BURN
      */
-    void reconcileSettledMarkets() {
-        // point_history에서 SPEND_MARKET이 있는 마켓(reference_id = predictionId)의
-        // 고유 마켓 목록을 구하기는 어려움 (reference_id가 predictionId이지 marketId가 아님).
-        // 대신 point_history의 reference_id(predictionId) 기준으로 검증하되,
-        // 여기서는 전체 SPEND_MARKET 합 vs 전체 SETTLE_MARKET + REFUND_MARKET + BURN 합을 검증.
-
+    void checkSelfLedgerInvariant() {
         BigDecimal totalSpend = querySum("SPEND_MARKET");
         BigDecimal totalSettle = querySum("SETTLE_MARKET");
         BigDecimal totalRefund = querySum("REFUND_MARKET");
         BigDecimal totalBurn = querySum("BURN");
-
-        // 불변식: 차감 합 = 정산 합 + 환불 합 + 소각 합 + 미정산 잔여
-        // 미정산(CONFIRMED 상태에서 아직 정산 안 된 건)이 있으면 차이가 생기므로,
-        // 여기서는 차감 ≥ 정산 + 환불 + 소각 인지만 검증 (역전은 비정상)
         BigDecimal distributed = totalSettle.add(totalRefund).add(totalBurn);
 
         if (distributed.compareTo(totalSpend) > 0) {
             BigDecimal diff = distributed.subtract(totalSpend);
-            String detail = "SPEND=%s, SETTLE=%s, REFUND=%s, BURN=%s, distributed=%s"
-                    .formatted(totalSpend, totalSettle, totalRefund, totalBurn, distributed);
-
-            log.warn("Reconciliation MISMATCH: distributed({}) > spend({}). diff={}, detail={}",
-                    distributed, totalSpend, diff, detail);
-            mismatchCounter.increment();
-
-            mismatchRepository.save(ReconciliationMismatch.builder()
-                    .checkType("POINT_TOTAL_BALANCE")
-                    .expectedValue(totalSpend)
-                    .actualValue(distributed)
-                    .diffValue(diff)
-                    .detail(detail)
-                    .build());
+            String detail = "SPEND=%s, SETTLE=%s, REFUND=%s, BURN=%s".formatted(
+                    totalSpend, totalSettle, totalRefund, totalBurn);
+            log.warn("Reconciliation MISMATCH [SELF]: distributed({}) > spend({}), diff={}", distributed, totalSpend, diff);
+            recordMismatch("POINT_TOTAL_BALANCE", null, totalSpend, distributed, diff, detail);
         } else {
-            log.info("Reconciliation OK: spend={}, distributed={} (settle={}, refund={}, burn={})",
-                    totalSpend, distributed, totalSettle, totalRefund, totalBurn);
+            log.info("Reconciliation OK [SELF]: spend={}, distributed={}", totalSpend, distributed);
         }
+    }
+
+    /**
+     * ② 교차 검증: Market의 CONFIRMED+REFUNDED 합 vs point_history SPEND 합.
+     * Market 다운 시 스킵 (장애 전파 금지).
+     */
+    void checkCrossServiceInvariant() {
+        List<Long> marketIds;
+        try {
+            marketIds = restTemplate.exchange(
+                    marketServiceUrl + "/internal/api/v1/markets/reconciliation-targets",
+                    HttpMethod.GET, null,
+                    new ParameterizedTypeReference<List<Long>>() {}
+            ).getBody();
+        } catch (Exception e) {
+            log.warn("Reconciliation [CROSS]: Market unavailable, skipping. error={}", e.getMessage());
+            return;
+        }
+
+        if (marketIds == null || marketIds.isEmpty()) {
+            log.info("Reconciliation [CROSS]: no targets");
+            return;
+        }
+
+        for (Long marketId : marketIds) {
+            try {
+                checkOneMarket(marketId);
+            } catch (Exception e) {
+                log.warn("Reconciliation [CROSS]: failed for marketId={}, error={}", marketId, e.getMessage());
+            }
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void checkOneMarket(Long marketId) {
+        Map<String, Object> summary = restTemplate.getForObject(
+                marketServiceUrl + "/internal/api/v1/markets/{id}/reconciliation-summary",
+                Map.class, marketId);
+        if (summary == null) return;
+
+        BigDecimal marketConfirmed = toBigDecimal(summary.get("confirmedTotalAmount"));
+        BigDecimal marketRefunded = toBigDecimal(summary.get("refundedTotalAmount"));
+        BigDecimal marketTotal = marketConfirmed.add(marketRefunded);
+
+        // point_history 전체 SPEND_MARKET 합과 대조.
+        // Market 합계가 전체 SPEND보다 크면 비정상 (없는 차감이 Market에 기록된 것)
+        BigDecimal pointSpendTotal = querySum("SPEND_MARKET");
+
+        if (marketTotal.compareTo(pointSpendTotal) > 0) {
+            BigDecimal diff = marketTotal.subtract(pointSpendTotal);
+            String detail = "marketId=%d, marketConfirmed=%s, marketRefunded=%s, pointSpendTotal=%s"
+                    .formatted(marketId, marketConfirmed, marketRefunded, pointSpendTotal);
+            log.warn("Reconciliation MISMATCH [CROSS]: marketTotal({}) > pointSpend({}) for marketId={}",
+                    marketTotal, pointSpendTotal, marketId);
+            recordMismatch("MARKET_SPEND_MATCH", marketId, pointSpendTotal, marketTotal, diff, detail);
+        } else {
+            log.debug("Reconciliation OK [CROSS]: marketId={}, marketTotal={}", marketId, marketTotal);
+        }
+    }
+
+    private void recordMismatch(String checkType, Long marketId,
+                                 BigDecimal expected, BigDecimal actual, BigDecimal diff, String detail) {
+        mismatchCounter.increment();
+        mismatchRepository.save(ReconciliationMismatch.builder()
+                .checkType(checkType).marketId(marketId)
+                .expectedValue(expected).actualValue(actual)
+                .diffValue(diff).detail(detail).build());
     }
 
     private BigDecimal querySum(String type) {
@@ -106,5 +153,11 @@ public class ReconciliationScheduler {
                 "SELECT COALESCE(SUM(amount), 0) FROM point_history WHERE type = ? AND status = 'SUCCEEDED'",
                 BigDecimal.class, type);
         return result != null ? result : BigDecimal.ZERO;
+    }
+
+    private BigDecimal toBigDecimal(Object value) {
+        if (value == null) return BigDecimal.ZERO;
+        if (value instanceof BigDecimal bd) return bd;
+        return new BigDecimal(value.toString());
     }
 }

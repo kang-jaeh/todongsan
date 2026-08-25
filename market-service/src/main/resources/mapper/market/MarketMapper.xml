@@ -1583,6 +1583,12 @@
         WHERE deleted_at IS NULL
     </select>
 
+    <select id="selectSettledOrVoidedMarketIds" resultType="long">
+        SELECT id FROM market
+        WHERE status IN ('SETTLED', 'VOIDED') AND deleted_at IS NULL
+        ORDER BY id ASC
+    </select>
+
     <!-- 정합성 대사: CONFIRMED 예측 금액 합 -->
     <select id="sumConfirmedPredictionAmount" resultType="java.math.BigDecimal">
         SELECT COALESCE(SUM(point_amount), 0)
