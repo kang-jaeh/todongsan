@@ -27,6 +27,25 @@ client:
     mode: ${INSIGHT_CLIENT_MODE:fake}
     base-url: ${INSIGHT_SERVICE_URL:http://localhost:8083}
 
+# ── Kafka ──────────────────────────────────────────────────
+spring.kafka:
+  bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+  producer:
+    acks: all
+    retries: 3
+    key-serializer: org.apache.kafka.common.serialization.StringSerializer
+    value-serializer: org.apache.kafka.common.serialization.StringSerializer
+    properties:
+      max.in.flight.requests.per.connection: 5
+  consumer:
+    group-id: market-service
+    auto-offset-reset: earliest
+    enable-auto-commit: false
+    key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+  listener:
+    ack-mode: manual
+
 mybatis:
   mapper-locations: classpath:/mapper/**/*.xml
   configuration:

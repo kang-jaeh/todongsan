@@ -3,31 +3,31 @@ package com.todongsan.marketservice.market.service;
 import com.todongsan.marketservice.global.exception.CustomException;
 import com.todongsan.marketservice.global.exception.errorcode.CommonErrorCode;
 import com.todongsan.marketservice.global.exception.errorcode.MarketErrorCode;
-import com.todongsan.marketservice.global.exception.errorcode.PointErrorCode;
-import com.todongsan.marketservice.market.client.MemberPointClient;
-import com.todongsan.marketservice.market.client.PointSpendCommand;
-import com.todongsan.marketservice.market.client.exception.MemberPointExternalException;
-import com.todongsan.marketservice.market.client.exception.MemberPointTimeoutException;
-import com.todongsan.marketservice.market.client.exception.MemberPointUnavailableException;
-import com.todongsan.marketservice.market.client.exception.PointInsufficientException;
 import com.todongsan.marketservice.market.dto.request.CreatePredictionRequest;
 import com.todongsan.marketservice.market.dto.request.QuoteMarketPredictionRequest;
 import com.todongsan.marketservice.market.dto.response.CreatePredictionResponse;
 import com.todongsan.marketservice.market.dto.response.QuoteMarketPredictionResponse;
 import com.todongsan.marketservice.market.entity.MarketPrediction;
+import com.todongsan.marketservice.outbox.OutboxEventCreator;
 import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 
+/**
+ * Market 예측 참여 서비스.
+ *
+ * 기존: REST 동기 spend → 즉시 CONFIRMED/FAILED
+ * 변경: Choreography Saga — prediction.created 이벤트 발행 후 202 Accepted.
+ *       Member-Point가 비동기로 spend 처리 → point.deducted/failed 이벤트 → Market Consumer가 상태 전이.
+ *
+ * createPendingPrediction TX 안에서 outbox INSERT하므로 이중 쓰기 문제 없음.
+ */
 @Service
 @RequiredArgsConstructor
 public class MarketPredictionService {
 
-    private static final String SPEND_TYPE = "SPEND_MARKET";
-    private static final String REFERENCE_TYPE = "MARKET_PREDICTION";
-
     private final MarketPredictionTransactionService transactionService;
-    private final MemberPointClient memberPointClient;
+    private final OutboxEventCreator outboxEventCreator;
 
     public CreatePredictionResponse createPrediction(
             long marketId,
@@ -39,34 +39,16 @@ public class MarketPredictionService {
 
         MarketPrediction prediction;
         try {
-            prediction = transactionService.createPendingPrediction(
-                    marketId,
-                    memberId,
-                    idempotencyKey,
-                    request
-            );
+            // TX: prediction INSERT (POINT_PENDING) + outbox INSERT (prediction.created)
+            prediction = transactionService.createPendingPredictionWithOutbox(
+                    marketId, memberId, idempotencyKey, request, outboxEventCreator);
         } catch (DuplicateKeyException e) {
             throw new CustomException(MarketErrorCode.MARKET_ALREADY_PREDICTED);
         }
-        try {
-            memberPointClient.spend(new PointSpendCommand(
-                    memberId,
-                    SPEND_TYPE,
-                    prediction.getPointAmount(),
-                    REFERENCE_TYPE,
-                    prediction.getId(),
-                    prediction.getPointSpendIdempotencyKey()
-            ));
-        } catch (PointInsufficientException e) {
-            transactionService.markPredictionFailed(prediction.getId(), failureReason(e, "POINT_INSUFFICIENT"));
-            throw new CustomException(PointErrorCode.POINT_INSUFFICIENT);
-        } catch (MemberPointTimeoutException | MemberPointUnavailableException | MemberPointExternalException e) {
-            return toResponse(transactionService.markPredictionUnknown(
-                    prediction.getId(),
-                    failureReason(e, "MEMBER_POINT_STATUS_UNKNOWN")
-            ));
-        }
-        return transactionService.confirmPrediction(prediction.getId());
+
+        // 202 Accepted — 포인트 차감은 비동기로 진행.
+        // 클라이언트는 prediction 상태를 폴링하여 CONFIRMED/FAILED를 확인한다.
+        return toResponse(prediction);
     }
 
     public QuoteMarketPredictionResponse quotePrediction(
@@ -86,12 +68,6 @@ public class MarketPredictionService {
                 prediction.getContractQuantity(),
                 prediction.getStatus()
         );
-    }
-
-    private String failureReason(RuntimeException exception, String fallback) {
-        String message = exception.getMessage();
-        String reason = message == null || message.isBlank() ? fallback : message;
-        return reason.length() <= 255 ? reason : reason.substring(0, 255);
     }
 
     private void validateHeaders(long marketId, Long memberId, String idempotencyKey) {

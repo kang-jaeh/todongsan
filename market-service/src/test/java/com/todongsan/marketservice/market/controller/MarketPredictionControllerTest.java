@@ -68,12 +68,15 @@ class MarketPredictionControllerTest {
         jdbcTemplate.update("DELETE FROM market_prediction");
         jdbcTemplate.update("DELETE FROM market_option");
         jdbcTemplate.update("DELETE FROM market");
+        jdbcTemplate.update("DELETE FROM outbox_event");
+        jdbcTemplate.update("DELETE FROM processed_event");
     }
 
     @Test
-    void createPredictionConfirmsPredictionAndRecalculatesPrices() throws Exception {
+    void createPrediction_Saga_POINT_PENDING_반환_outbox_이벤트_생성() throws Exception {
         insertActiveMarketWithOptions();
 
+        // Saga: API는 POINT_PENDING으로 즉시 반환. 가격 확정은 비동기.
         mockMvc.perform(predictionRequest(MARKET_ID, MEMBER_ID, IDEMPOTENCY_KEY, 1L, "100.00"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(true))
@@ -81,87 +84,23 @@ class MarketPredictionControllerTest {
                 .andExpect(jsonPath("$.data.marketId").value(MARKET_ID))
                 .andExpect(jsonPath("$.data.selectedOptionId").value(1))
                 .andExpect(jsonPath("$.data.pointAmount").value("100.00"))
-                .andExpect(jsonPath("$.data.priceSnapshot").value("0.50000000"))
-                .andExpect(jsonPath("$.data.contractQuantity").value("200.00000000"))
-                .andExpect(jsonPath("$.data.status").value("CONFIRMED"));
+                .andExpect(jsonPath("$.data.status").value("POINT_PENDING"));
 
-        Long predictionId = jdbcTemplate.queryForObject("SELECT id FROM market_prediction", Long.class);
+        // DB: prediction은 POINT_PENDING, 가격 미확정
         assertThat(jdbcTemplate.queryForObject("SELECT status FROM market_prediction", String.class))
-                .isEqualTo("CONFIRMED");
-        assertThat(jdbcTemplate.queryForObject("SELECT point_amount FROM market_prediction", String.class))
-                .isEqualTo("100.00");
-        assertThat(jdbcTemplate.queryForObject("SELECT price_snapshot FROM market_prediction", String.class))
-                .isEqualTo("0.50000000");
-        assertThat(jdbcTemplate.queryForObject("SELECT contract_quantity FROM market_prediction", String.class))
-                .isEqualTo("200.00000000");
+                .isEqualTo("POINT_PENDING");
         assertThat(jdbcTemplate.queryForObject(
-                "SELECT point_spend_idempotency_key FROM market_prediction",
-                String.class
+                "SELECT point_spend_idempotency_key FROM market_prediction", String.class
         )).isEqualTo(FIRST_ATTEMPT_KEY);
-        assertThat(jdbcTemplate.queryForObject("SELECT attempt_no FROM market_prediction", Integer.class))
-                .isEqualTo(1);
-        assertThat(jdbcTemplate.queryForObject("SELECT total_pool FROM market", String.class)).isEqualTo("100.00");
-        assertThat(jdbcTemplate.queryForList(
-                "SELECT real_pool_amount FROM market_option ORDER BY id",
-                String.class
-        )).containsExactly("100.00", "0.00");
-        assertThat(jdbcTemplate.queryForList(
-                "SELECT total_contract_quantity FROM market_option ORDER BY id",
-                String.class
-        )).containsExactly("200.00000000", "0.00000000");
-        assertThat(jdbcTemplate.queryForList(
-                "SELECT current_price FROM market_option ORDER BY id",
-                String.class
-        )).containsExactly("0.66666667", "0.33333333");
-        assertThat(jdbcTemplate.queryForList(
-                "SELECT prediction_count FROM market_option ORDER BY id",
-                Integer.class
-        )).containsExactly(1, 0);
-        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM market_price_history", Integer.class))
-                .isEqualTo(2);
-        assertThat(jdbcTemplate.queryForList(
-                "SELECT prediction_id FROM market_price_history ORDER BY option_id",
-                Long.class
-        )).containsExactly(predictionId, predictionId);
-        assertThat(jdbcTemplate.queryForList(
-                "SELECT event_type FROM market_price_history ORDER BY option_id",
-                String.class
-        )).containsExactly("PREDICTION_CONFIRMED", "PREDICTION_CONFIRMED");
-        assertThat(jdbcTemplate.queryForList(
-                "SELECT price_before FROM market_price_history ORDER BY option_id",
-                String.class
-        )).containsExactly("0.50000000", "0.50000000");
-        assertThat(jdbcTemplate.queryForList(
-                "SELECT price_after FROM market_price_history ORDER BY option_id",
-                String.class
-        )).containsExactly("0.66666667", "0.33333333");
-        assertThat(jdbcTemplate.queryForList(
-                "SELECT real_pool_before FROM market_price_history ORDER BY option_id",
-                String.class
-        )).containsExactly("0.00", "0.00");
-        assertThat(jdbcTemplate.queryForList(
-                "SELECT real_pool_after FROM market_price_history ORDER BY option_id",
-                String.class
-        )).containsExactly("100.00", "0.00");
-        assertThat(jdbcTemplate.queryForList(
-                "SELECT contract_quantity_before FROM market_price_history ORDER BY option_id",
-                String.class
-        )).containsExactly("0.00000000", "0.00000000");
-        assertThat(jdbcTemplate.queryForList(
-                "SELECT contract_quantity_after FROM market_price_history ORDER BY option_id",
-                String.class
-        )).containsExactly("200.00000000", "0.00000000");
 
-        ArgumentCaptor<PointSpendCommand> commandCaptor = ArgumentCaptor.forClass(PointSpendCommand.class);
-        verify(memberPointClient).spend(commandCaptor.capture());
-        assertThat(commandCaptor.getValue()).isEqualTo(new PointSpendCommand(
-                MEMBER_ID,
-                "SPEND_MARKET",
-                new BigDecimal("100.00"),
-                "MARKET_PREDICTION",
-                predictionId,
-                FIRST_ATTEMPT_KEY
-        ));
+        // Outbox: prediction.created 이벤트가 생성됨
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM outbox_event", Integer.class))
+                .isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject("SELECT event_type FROM outbox_event", String.class))
+                .isEqualTo("PREDICTION_CREATED");
+
+        // MemberPointClient는 호출되지 않음 (비동기 Saga)
+        verifyNoInteractions(memberPointClient);
     }
 
     @Test
@@ -202,195 +141,9 @@ class MarketPredictionControllerTest {
                 .isZero();
     }
 
-    @Test
-    void createPredictionMarksPredictionFailedWhenPointIsInsufficient() throws Exception {
-        insertActiveMarketWithOptions();
-        doThrow(new PointInsufficientException("POINT_INSUFFICIENT"))
-                .when(memberPointClient)
-                .spend(any(PointSpendCommand.class));
-
-        mockMvc.perform(predictionRequest(MARKET_ID, MEMBER_ID, IDEMPOTENCY_KEY, 1L, "100.00"))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.success").value(false))
-                .andExpect(jsonPath("$.errorCode").value("POINT_INSUFFICIENT"));
-
-        assertPredictionStateWithoutPriceConfirmation("FAILED", "POINT_INSUFFICIENT");
-    }
-
-    @Test
-    void createPredictionRetriesFailedPredictionWithSameIdAndNextAttemptKey() throws Exception {
-        insertActiveMarketWithOptions();
-        doThrow(new PointInsufficientException("POINT_INSUFFICIENT"))
-                .doNothing()
-                .when(memberPointClient)
-                .spend(any(PointSpendCommand.class));
-
-        mockMvc.perform(predictionRequest(MARKET_ID, MEMBER_ID, IDEMPOTENCY_KEY, 1L, "100.00"))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("POINT_INSUFFICIENT"));
-        assertPredictionStateWithoutPriceConfirmation("FAILED", "POINT_INSUFFICIENT");
-        Long predictionId = jdbcTemplate.queryForObject("SELECT id FROM market_prediction", Long.class);
-
-        mockMvc.perform(predictionRequest(MARKET_ID, MEMBER_ID, IDEMPOTENCY_KEY, 1L, "100.00"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.predictionId").value(predictionId))
-                .andExpect(jsonPath("$.data.status").value("CONFIRMED"));
-
-        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM market_prediction", Integer.class))
-                .isEqualTo(1);
-        assertThat(jdbcTemplate.queryForObject("SELECT attempt_no FROM market_prediction", Integer.class))
-                .isEqualTo(2);
-        assertThat(jdbcTemplate.queryForObject(
-                "SELECT point_spend_idempotency_key FROM market_prediction",
-                String.class
-        )).isEqualTo(SECOND_ATTEMPT_KEY);
-        assertThat(jdbcTemplate.queryForObject("SELECT total_pool FROM market", String.class))
-                .isEqualTo("100.00");
-        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM market_price_history", Integer.class))
-                .isEqualTo(2);
-
-        ArgumentCaptor<PointSpendCommand> commandCaptor = ArgumentCaptor.forClass(PointSpendCommand.class);
-        verify(memberPointClient, times(2)).spend(commandCaptor.capture());
-        assertThat(commandCaptor.getAllValues())
-                .extracting(PointSpendCommand::referenceId)
-                .containsExactly(predictionId, predictionId);
-        assertThat(commandCaptor.getAllValues())
-                .extracting(PointSpendCommand::idempotencyKey)
-                .containsExactly(FIRST_ATTEMPT_KEY, SECOND_ATTEMPT_KEY);
-    }
-
-    @Test
-    void createPredictionRetriesFailedPredictionWithChangedOptionAndAmount() throws Exception {
-        insertActiveMarketWithOptions();
-        doThrow(new PointInsufficientException("POINT_INSUFFICIENT"))
-                .doNothing()
-                .when(memberPointClient)
-                .spend(any(PointSpendCommand.class));
-
-        mockMvc.perform(predictionRequest(MARKET_ID, MEMBER_ID, IDEMPOTENCY_KEY, 1L, "100.00"))
-                .andExpect(status().isConflict());
-        Long predictionId = jdbcTemplate.queryForObject("SELECT id FROM market_prediction", Long.class);
-
-        mockMvc.perform(predictionRequest(MARKET_ID, MEMBER_ID, IDEMPOTENCY_KEY, 2L, "300.00"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.predictionId").value(predictionId))
-                .andExpect(jsonPath("$.data.selectedOptionId").value(2))
-                .andExpect(jsonPath("$.data.pointAmount").value("300.00"))
-                .andExpect(jsonPath("$.data.status").value("CONFIRMED"));
-
-        assertThat(jdbcTemplate.queryForObject("SELECT option_id FROM market_prediction", Long.class))
-                .isEqualTo(2L);
-        assertThat(jdbcTemplate.queryForObject("SELECT point_amount FROM market_prediction", String.class))
-                .isEqualTo("300.00");
-        assertThat(jdbcTemplate.queryForObject("SELECT attempt_no FROM market_prediction", Integer.class))
-                .isEqualTo(2);
-        assertThat(jdbcTemplate.queryForObject(
-                "SELECT point_spend_idempotency_key FROM market_prediction",
-                String.class
-        )).isEqualTo(SECOND_ATTEMPT_KEY);
-        assertThat(jdbcTemplate.queryForList(
-                "SELECT real_pool_amount FROM market_option ORDER BY id",
-                String.class
-        )).containsExactly("0.00", "300.00");
-        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM market_price_history", Integer.class))
-                .isEqualTo(2);
-    }
-
-    @Test
-    void createPredictionRejectsFailedRetryAfterMarketClose() throws Exception {
-        insertActiveMarketWithOptions();
-        doThrow(new PointInsufficientException("POINT_INSUFFICIENT"))
-                .when(memberPointClient)
-                .spend(any(PointSpendCommand.class));
-
-        mockMvc.perform(predictionRequest(MARKET_ID, MEMBER_ID, IDEMPOTENCY_KEY, 1L, "100.00"))
-                .andExpect(status().isConflict());
-        jdbcTemplate.update("UPDATE market SET close_at = ? WHERE id = ?", LocalDateTime.now().minusSeconds(1), MARKET_ID);
-
-        expectPredictionError(MARKET_ID, MEMBER_ID, IDEMPOTENCY_KEY, 2L, "300.00", 409, "MARKET_CLOSED");
-
-        assertThat(jdbcTemplate.queryForObject("SELECT status FROM market_prediction", String.class))
-                .isEqualTo("FAILED");
-        assertThat(jdbcTemplate.queryForObject("SELECT attempt_no FROM market_prediction", Integer.class))
-                .isEqualTo(1);
-        assertThat(jdbcTemplate.queryForObject(
-                "SELECT point_spend_idempotency_key FROM market_prediction",
-                String.class
-        )).isEqualTo(FIRST_ATTEMPT_KEY);
-        verify(memberPointClient).spend(any(PointSpendCommand.class));
-    }
-
-    @Test
-    void createPredictionMarksPredictionUnknownWhenPointSpendTimesOut() throws Exception {
-        insertActiveMarketWithOptions();
-        doThrow(new MemberPointTimeoutException("MEMBER_POINT_TIMEOUT"))
-                .when(memberPointClient)
-                .spend(any(PointSpendCommand.class));
-
-        mockMvc.perform(predictionRequest(MARKET_ID, MEMBER_ID, IDEMPOTENCY_KEY, 1L, "100.00"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.success").value(true))
-                .andExpect(jsonPath("$.message").value("예측 참여 처리 상태를 확인 중입니다."))
-                .andExpect(jsonPath("$.data.pointAmount").value("100.00"))
-                .andExpect(jsonPath("$.data.priceSnapshot").value(nullValue()))
-                .andExpect(jsonPath("$.data.contractQuantity").value(nullValue()))
-                .andExpect(jsonPath("$.data.status").value("POINT_UNKNOWN"));
-
-        assertPredictionStateWithoutPriceConfirmation("POINT_UNKNOWN", "MEMBER_POINT_TIMEOUT");
-        mockMvc.perform(get("/api/v1/markets/{marketId}/predictions/me", MARKET_ID)
-                        .header("X-Member-Id", MEMBER_ID))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.status").value("POINT_UNKNOWN"))
-                .andExpect(jsonPath("$.data.priceSnapshot").value(nullValue()))
-                .andExpect(jsonPath("$.data.contractQuantity").value(nullValue()));
-    }
-
-    @Test
-    void createPredictionRejectsRetryWhilePointStatusIsUnknown() throws Exception {
-        insertActiveMarketWithOptions();
-        doThrow(new MemberPointTimeoutException("MEMBER_POINT_TIMEOUT"))
-                .when(memberPointClient)
-                .spend(any(PointSpendCommand.class));
-
-        mockMvc.perform(predictionRequest(MARKET_ID, MEMBER_ID, IDEMPOTENCY_KEY, 1L, "100.00"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.status").value("POINT_UNKNOWN"));
-
-        expectPredictionError(MARKET_ID, MEMBER_ID, IDEMPOTENCY_KEY, 2L, "300.00", 409, "MARKET_ALREADY_PREDICTED");
-        verify(memberPointClient).spend(any(PointSpendCommand.class));
-    }
-
-    @Test
-    void createPredictionMarksPredictionUnknownWhenPointServiceReturnsExternalError() throws Exception {
-        insertActiveMarketWithOptions();
-        doThrow(new MemberPointExternalException("MEMBER_POINT_EXTERNAL_ERROR"))
-                .when(memberPointClient)
-                .spend(any(PointSpendCommand.class));
-
-        mockMvc.perform(predictionRequest(MARKET_ID, MEMBER_ID, IDEMPOTENCY_KEY, 1L, "100.00"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.status").value("POINT_UNKNOWN"))
-                .andExpect(jsonPath("$.data.priceSnapshot").value(nullValue()))
-                .andExpect(jsonPath("$.data.contractQuantity").value(nullValue()));
-
-        assertPredictionStateWithoutPriceConfirmation("POINT_UNKNOWN", "MEMBER_POINT_EXTERNAL_ERROR");
-    }
-
-    @Test
-    void createPredictionMarksPredictionUnknownWhenPointServiceIsUnavailable() throws Exception {
-        insertActiveMarketWithOptions();
-        doThrow(new MemberPointUnavailableException("MEMBER_POINT_UNAVAILABLE"))
-                .when(memberPointClient)
-                .spend(any(PointSpendCommand.class));
-
-        mockMvc.perform(predictionRequest(MARKET_ID, MEMBER_ID, IDEMPOTENCY_KEY, 1L, "100.00"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.status").value("POINT_UNKNOWN"))
-                .andExpect(jsonPath("$.data.priceSnapshot").value(nullValue()))
-                .andExpect(jsonPath("$.data.contractQuantity").value(nullValue()));
-
-        assertPredictionStateWithoutPriceConfirmation("POINT_UNKNOWN", "MEMBER_POINT_UNAVAILABLE");
-    }
+    // REST 동기 spend 분기 테스트 제거됨 — Saga 전환으로 API 시점에 spend가 발생하지 않음.
+    // spend 성공/실패/타임아웃은 Kafka 컨슈머(PointResultConsumer)가 비동기로 처리.
+    // 해당 시나리오는 Phase 2 Saga 통합 테스트로 검증 예정.
 
     @Test
     void createPredictionRejectsPendingMarket() throws Exception {
