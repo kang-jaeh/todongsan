@@ -108,10 +108,12 @@ public class PointInternalServiceImpl implements PointInternalService {
             });
         } catch (DataIntegrityViolationException e) {
             // 트랜잭션이 롤백된 후 여기에 도달. auto-commit read로 선행 요청의 확정 결과를 조회한다.
-            // InnoDB 유니크 인덱스 락 덕분에 선행 트랜잭션은 이미 커밋된 상태.
             PointHistory winner = pointHistoryRepository.findByIdempotencyKey(idempotencyKey)
-                    .orElseThrow(() -> e); // 키로 못 찾으면 다른 제약 위반 → 원래 예외 전파
+                    .orElseThrow(() -> e);
             return handleExistingEarn(winner, requestHash);
+        } catch (org.springframework.dao.CannotAcquireLockException e) {
+            log.warn("Lock contention on earn: key={}, error={}", idempotencyKey, e.getMessage());
+            throw new CustomException(ErrorCode.IDEMPOTENCY_KEY_CONFLICT);
         }
     }
 
@@ -205,6 +207,11 @@ public class PointInternalServiceImpl implements PointInternalService {
             PointHistory winner = pointHistoryRepository.findByIdempotencyKey(idempotencyKey)
                     .orElseThrow(() -> e);
             return handleExistingSpend(winner, requestHash);
+        } catch (org.springframework.dao.CannotAcquireLockException e) {
+            // InnoDB 데드락 또는 락 타임아웃 — 동시 차감 경합에서 발생 가능.
+            // 재시도 가능한 일시적 오류이므로 409로 반환하여 클라이언트가 재시도하게 한다.
+            log.warn("Lock contention on spend: key={}, error={}", idempotencyKey, e.getMessage());
+            throw new CustomException(ErrorCode.IDEMPOTENCY_KEY_CONFLICT);
         }
     }
 
