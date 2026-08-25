@@ -20,22 +20,24 @@ const firstSuccess = new Counter('first_success');
 
 export const options = {
   scenarios: {
-    burst: {
+    // Phase 1: 동시 정합성 (같은 키 100VU burst)
+    correctness: {
       executor: 'shared-iterations',
       vus: 100,
       iterations: 100,
       maxDuration: '30s',
+      exec: 'sameKey',
     },
   },
   thresholds: {
-    'errors_5xx': ['count==0'],        // 5xx 0건
-    'http_req_failed': ['rate<0.01'],  // 전체 실패율 1% 미만
+    'errors_5xx': ['count==0'],
+    'http_req_failed': ['rate<0.01'],
   },
 };
 
 const IDEMPOTENCY_KEY = 'k6:idempotency-test:same-key-001';
 
-export default function () {
+export function sameKey() {
   const payload = JSON.stringify({
     memberId: 9003,
     type: 'EARN_VOTE',
