@@ -431,4 +431,8 @@ public interface MarketMapper {
     long countDistinctProblemMarketsForAdmin(@Param("pendingThreshold") LocalDateTime pendingThreshold);
 
     AdminMarketStatusCountsRow selectAdminMarketStatusCounts(@Param("now") LocalDateTime now);
+
+    // 정합성 대사용 집계
+    BigDecimal sumConfirmedPredictionAmount(@Param("marketId") long marketId);
+    BigDecimal sumRefundedPredictionAmount(@Param("marketId") long marketId);
 }

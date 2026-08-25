@@ -23,6 +23,7 @@ import com.todongsan.marketservice.market.type.MarketAnswerType;
 import com.todongsan.marketservice.market.type.MarketPriceModel;
 import com.todongsan.marketservice.market.type.MarketStatus;
 import com.todongsan.marketservice.market.type.MarketVoidReasonType;
+import com.todongsan.marketservice.outbox.OutboxEventCreator;
 import com.todongsan.marketservice.market.type.RegionScope;
 import com.todongsan.marketservice.market.type.RefundStatus;
 import java.math.BigDecimal;
@@ -56,6 +57,7 @@ public class AdminMarketService {
     private final MarketMapper marketMapper;
     private final MarketSettlementService marketSettlementService;
     private final MarketRefundService marketRefundService;
+    private final OutboxEventCreator outboxEventCreator;
 
     @Transactional
     public CreateMarketResponse createMarket(CreateMarketRequest request) {
@@ -204,6 +206,12 @@ public class AdminMarketService {
         marketMapper.insertMarketVoid(marketVoid);
         if (marketMapper.updateMarketStatusToVoided(marketId, now) != 1) {
             throw new CustomException(MarketErrorCode.MARKET_CANNOT_VOID);
+        }
+
+        // VOIDED + CONFIRMED 전원 환불 이벤트 outbox INSERT (같은 TX)
+        if (refundablePredictionCount > 0) {
+            outboxEventCreator.createMarketVoidedEvent(
+                    marketId, marketVoid.getId(), Math.toIntExact(refundablePredictionCount));
         }
 
         return new VoidMarketResponse(
