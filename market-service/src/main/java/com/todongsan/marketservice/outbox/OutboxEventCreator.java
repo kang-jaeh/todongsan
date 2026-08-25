@@ -108,8 +108,9 @@ public class OutboxEventCreator {
     }
 
     /**
-     * market.voided 이벤트를 outbox에 저장한다.
-     * 마켓 무효화 시 CONFIRMED 전원 환불을 트리거한다.
+     * market.voided 감사/알림용 이벤트를 outbox에 저장한다.
+     * 무효화 사실의 감사 기록 및 향후 알림 확장용 이벤트.
+     * 환불 실행은 MarketRefundService의 REST batch가 담당한다 (소비자 없음, 의도된 설계).
      */
     public String createMarketVoidedEvent(Long marketId, Long marketVoidId, int refundCount) {
         String eventId = UUID.randomUUID().toString();

@@ -208,12 +208,17 @@ public class AdminMarketService {
             throw new CustomException(MarketErrorCode.MARKET_CANNOT_VOID);
         }
 
-        // 환불은 MarketRefundService → MemberPointClient REST batch로 실행.
-        // 이벤트가 아닌 REST 동기 batch인 이유:
+        // 환불 실행은 MarketRefundService → MemberPointClient REST 동기 batch가 담당.
+        // 이벤트가 아닌 REST batch인 이유:
         // (1) 관리자 액션 → 무효 처리 결과를 즉시 확인해야 함
         // (2) 기존 batch 부분 성공 API(REQUIRES_NEW) 재사용이 자연스러움
-        // earn/spend와 판단 기준이 다름: earn은 부수효과라 이벤트, spend는 Saga.
-        // 무효화 환불은 관리자 명령 → 즉시 피드백이므로 REST 동기가 적합.
+
+        // 감사/알림용 이벤트 기록 (소비자 없음 — 의도된 설계).
+        // 향후 알림 서비스 등에서 구독하여 관리자 알림을 보낼 수 있도록 확장 포인트로 남겨둠.
+        if (refundablePredictionCount > 0) {
+            outboxEventCreator.createMarketVoidedEvent(
+                    marketId, marketVoid.getId(), Math.toIntExact(refundablePredictionCount));
+        }
 
         return new VoidMarketResponse(
                 marketId,

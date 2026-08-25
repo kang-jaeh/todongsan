@@ -66,6 +66,20 @@ CREATE TABLE IF NOT EXISTS point_history (
         FOREIGN KEY (member_id) REFERENCES member(id)
 );
 
+CREATE TABLE IF NOT EXISTS reconciliation_mismatch (
+    id              BIGINT          NOT NULL AUTO_INCREMENT,
+    check_type      VARCHAR(50)     NOT NULL,
+    market_id       BIGINT,
+    expected_value  DECIMAL(18,2)   NOT NULL,
+    actual_value    DECIMAL(18,2)   NOT NULL,
+    diff_value      DECIMAL(18,2)   NOT NULL,
+    detail          TEXT,
+    resolved        BOOLEAN         NOT NULL DEFAULT FALSE,
+    created_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    INDEX idx_reconciliation_resolved (resolved, created_at)
+);
+
 CREATE TABLE IF NOT EXISTS outbox_event (
     id              BIGINT          NOT NULL AUTO_INCREMENT,
     aggregate_type  VARCHAR(50)     NOT NULL,
