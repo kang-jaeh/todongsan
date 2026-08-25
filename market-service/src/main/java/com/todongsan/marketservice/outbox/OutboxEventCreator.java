@@ -62,4 +62,48 @@ public class OutboxEventCreator {
         outboxMapper.insertOutboxEvent(event);
         return eventId;
     }
+
+    /**
+     * prediction.refund.requested 이벤트를 outbox에 저장한다.
+     * 늦은 성공 레이스 등으로 환불이 필요할 때 사용.
+     */
+    public String createRefundRequestedEvent(Long marketId, Long memberId, Long predictionId,
+                                              BigDecimal amount, String refundIdempotencyKey) {
+        String eventId = UUID.randomUUID().toString();
+
+        Map<String, Object> envelope = new LinkedHashMap<>();
+        envelope.put("eventId", eventId);
+        envelope.put("eventType", "PREDICTION_REFUND_REQUESTED");
+        envelope.put("schemaVersion", 1);
+        envelope.put("occurredAt", LocalDateTime.now().toString());
+        envelope.put("aggregateType", "MARKET_PREDICTION");
+        envelope.put("aggregateId", predictionId);
+
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("memberId", memberId);
+        payload.put("marketId", marketId);
+        payload.put("predictionId", predictionId);
+        payload.put("amount", amount);
+        payload.put("refundIdempotencyKey", refundIdempotencyKey);
+        // 원 차감 키를 환불 키에서 파생: REFUND-{원키} → 원키
+        payload.put("originalSpendKey", refundIdempotencyKey.replaceFirst("^REFUND-", ""));
+        envelope.put("payload", payload);
+
+        String json;
+        try {
+            json = objectMapper.writeValueAsString(envelope);
+        } catch (JsonProcessingException e) {
+            throw new RuntimeException("Outbox 이벤트 직렬화 실패", e);
+        }
+
+        OutboxEvent event = new OutboxEvent();
+        event.setAggregateType("MARKET_PREDICTION");
+        event.setAggregateId(memberId);
+        event.setEventType("PREDICTION_REFUND_REQUESTED");
+        event.setEventId(eventId);
+        event.setPayload(json);
+
+        outboxMapper.insertOutboxEvent(event);
+        return eventId;
+    }
 }

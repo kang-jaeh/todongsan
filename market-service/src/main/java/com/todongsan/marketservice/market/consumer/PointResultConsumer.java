@@ -6,6 +6,7 @@ import com.todongsan.marketservice.market.entity.MarketPrediction;
 import com.todongsan.marketservice.market.repository.MarketMapper;
 import com.todongsan.marketservice.market.service.MarketPredictionTransactionService;
 import com.todongsan.marketservice.market.type.PredictionStatus;
+import com.todongsan.marketservice.outbox.OutboxEventCreator;
 import com.todongsan.marketservice.outbox.OutboxMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -45,10 +46,11 @@ public class PointResultConsumer {
     private final MarketPredictionTransactionService transactionService;
     private final MarketMapper marketMapper;
     private final OutboxMapper outboxMapper;
+    private final OutboxEventCreator outboxEventCreator;
     private final ObjectMapper objectMapper;
 
     @KafkaListener(
-            topics = {"point.deducted", "point.deduction.failed"},
+            topics = {"point.deducted", "point.deduction.failed", "point.refunded"},
             groupId = "market-service",
             containerFactory = "kafkaListenerContainerFactory"
     )
@@ -106,12 +108,11 @@ public class PointResultConsumer {
         // 3. 상태×이벤트 매트릭스
         PredictionStatus currentStatus = prediction.getStatus();
 
-        if ("POINT_DEDUCTED".equals(eventType)) {
-            handlePointDeducted(eventId, prediction, currentStatus);
-        } else if ("POINT_DEDUCTION_FAILED".equals(eventType)) {
-            handlePointDeductionFailed(eventId, prediction, currentStatus, failReason);
-        } else {
-            log.warn("Unknown event type: {}, eventId={}", eventType, eventId);
+        switch (eventType) {
+            case "POINT_DEDUCTED" -> handlePointDeducted(eventId, prediction, currentStatus);
+            case "POINT_DEDUCTION_FAILED" -> handlePointDeductionFailed(eventId, prediction, currentStatus, failReason);
+            case "POINT_REFUNDED" -> handlePointRefunded(eventId, prediction, currentStatus);
+            default -> log.warn("Unknown event type: {}, eventId={}", eventType, eventId);
         }
 
         // 4. Inbox 기록 (같은 트랜잭션)
@@ -173,12 +174,32 @@ public class PointResultConsumer {
         }
     }
 
+    private void handlePointRefunded(String eventId, MarketPrediction prediction,
+                                      PredictionStatus currentStatus) {
+        switch (currentStatus) {
+            case REFUND_PENDING, REFUND_UNKNOWN -> {
+                // 정상: 환불 완료 → REFUNDED 전이
+                marketMapper.markPredictionRefunded(
+                        prediction.getId(), prediction.getPointAmount(), LocalDateTime.now());
+                log.info("Prediction refunded via event: predictionId={}", prediction.getId());
+            }
+            case REFUNDED -> {
+                // 멱등 무시
+                log.debug("Idempotent ignore: predictionId={} already REFUNDED", prediction.getId());
+            }
+            default -> {
+                log.warn("Unexpected state for POINT_REFUNDED: predictionId={}, status={}",
+                        prediction.getId(), currentStatus);
+            }
+        }
+    }
+
     /**
      * 늦은 성공 환불 트리거.
      * FAILED 확정 후 point.deducted가 도착한 경우, 차감된 포인트를 환불한다.
      *
-     * 환불 키: REFUND-{원 차감 idempotencyKey} → 원거래당 환불 1회 보장.
-     * TODO: Phase 2 커밋 4에서 환불-원거래 연결 구현 시 실제 환불 로직 추가.
+     * 환불 키: REFUND-{원 차감 idempotencyKey} → 원거래당 환불 1회 구조적 보장.
+     * REFUND_PENDING 전이 + 환불 요청 이벤트 outbox INSERT를 같은 트랜잭션에서 수행.
      */
     private void triggerRefund(MarketPrediction prediction) {
         // FAILED → REFUND_PENDING 전이
@@ -186,9 +207,16 @@ public class PointResultConsumer {
                 prediction.getId(),
                 LocalDateTime.now());
 
-        log.info("Refund triggered for late success: predictionId={}, memberId={}, amount={}",
-                prediction.getId(), prediction.getMemberId(), prediction.getPointAmount());
+        // 환불 요청 이벤트 발행 (같은 트랜잭션 — outbox)
+        String refundKey = "REFUND-" + prediction.getPointSpendIdempotencyKey();
+        outboxEventCreator.createRefundRequestedEvent(
+                prediction.getMarketId(),
+                prediction.getMemberId(),
+                prediction.getId(),
+                prediction.getPointAmount(),
+                refundKey);
 
-        // TODO: Member-Point에 환불 요청 이벤트 발행 (Phase 2 커밋 4)
+        log.info("Refund triggered for late success: predictionId={}, memberId={}, amount={}, refundKey={}",
+                prediction.getId(), prediction.getMemberId(), prediction.getPointAmount(), refundKey);
     }
 }
