@@ -17,37 +17,103 @@ spring:
               - OPTIONS
             allowed-headers: "*"
             allow-credentials: true
+
+      # ── 기본 필터: Rate Limiter ──────────────────────────────
+      default-filters:
+        - name: RequestRateLimiter
+          args:
+            redis-rate-limiter.replenishRate: 20   # 초당 허용 요청 수
+            redis-rate-limiter.burstCapacity: 40   # 버스트 허용 최대
+            redis-rate-limiter.requestedTokens: 1
+            key-resolver: "#{@ipKeyResolver}"
+
       routes:
         - id: admin-market
           uri: ${MARKET_SERVICE_URL:http://localhost:8082}
           predicates:
             - Path=/api/v1/admin/markets/**
+          filters:
+            - name: CircuitBreaker
+              args:
+                name: market-cb
+                fallbackUri: forward:/fallback/unavailable
 
         - id: member-point
           uri: ${MEMBER_POINT_SERVICE_URL:http://localhost:8080}
           predicates:
             - Path=/api/v1/members/**, /api/v1/points/**
+          filters:
+            - name: CircuitBreaker
+              args:
+                name: member-point-cb
+                fallbackUri: forward:/fallback/unavailable
 
         - id: battle
           uri: ${BATTLE_SERVICE_URL:http://localhost:8081}
           predicates:
             - Path=/api/v1/battles/**
+          filters:
+            - name: CircuitBreaker
+              args:
+                name: battle-cb
+                fallbackUri: forward:/fallback/unavailable
 
         - id: market
           uri: ${MARKET_SERVICE_URL:http://localhost:8082}
           predicates:
             - Path=/api/v1/markets/**
+          filters:
+            - name: CircuitBreaker
+              args:
+                name: market-cb
+                fallbackUri: forward:/fallback/unavailable
 
         - id: insight
           uri: ${INSIGHT_SERVICE_URL:http://localhost:8083}
           predicates:
             - Path=/api/v1/insights/**, /api/v1/reputations/**, /api/v1/admin/insights/**
+          filters:
+            - name: CircuitBreaker
+              args:
+                name: insight-cb
+                fallbackUri: forward:/fallback/unavailable
+
+  # ── Redis ────────────────────────────────────────────────
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
 
 server:
   port: 9000
 
 jwt:
   secret: ${JWT_SECRET}
+
+# ── Resilience4j Circuit Breaker ───────────────────────────
+resilience4j:
+  circuitbreaker:
+    configs:
+      default:
+        sliding-window-size: 10           # 최근 10건 기준
+        failure-rate-threshold: 50        # 50% 실패 시 OPEN
+        wait-duration-in-open-state: 30s  # OPEN 후 30초 대기
+        permitted-number-of-calls-in-half-open-state: 3  # HALF_OPEN에서 3건 시도
+        slow-call-duration-threshold: 3s  # 3초 이상 = slow call
+        slow-call-rate-threshold: 80      # 80% slow이면 OPEN
+    instances:
+      member-point-cb:
+        base-config: default
+      battle-cb:
+        base-config: default
+      market-cb:
+        base-config: default
+      insight-cb:
+        base-config: default
+  timelimiter:
+    configs:
+      default:
+        timeout-duration: 5s              # 5초 타임아웃
 
 management:
   endpoints:
